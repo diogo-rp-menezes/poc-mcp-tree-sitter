@@ -1,0 +1,17 @@
+[package]
+name = "mcp-treesitter-desktop"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+getrandom = "0.2"
+
+[profile.dev]
+debug = "line-tables-only"   # mantém números de linha nos erros, sem os PDBs gigantes
+
+[profile.dev.package."*"]
+debug = false                # sem símbolos de depuração para as dependências

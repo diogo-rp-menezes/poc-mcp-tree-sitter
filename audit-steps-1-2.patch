@@ -1,0 +1,1038 @@
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/App.tsx work/src/client/App.tsx
+--- orig/src/client/App.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/App.tsx	2026-10-06 04:44:26.172804646 +0000
+@@ -1,6 +1,5 @@
+ import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+-import { Header } from './components/Header';
+-import { Sidebar, NavTab } from './components/Sidebar';
++import { NavTab } from './types';
+ import { VSCodeTitleBar } from './components/VSCodeTitleBar';
+ import { VSCodeActivityBar } from './components/VSCodeActivityBar';
+ import { VSCodePrimarySideBar } from './components/VSCodePrimarySideBar';
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/CodeEditor.tsx work/src/client/components/CodeEditor.tsx
+--- orig/src/client/components/CodeEditor.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/CodeEditor.tsx	2026-10-06 04:44:26.171736304 +0000
+@@ -17,7 +17,7 @@
+   Cpu,
+ } from 'lucide-react';
+ import { ASTNode, SymbolItem } from '../types';
+-import { NavTab } from './Sidebar';
++import { NavTab } from '../types';
+ 
+ export interface LintMarker {
+   startLineNumber: number;
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/CodeMiniMap.tsx work/src/client/components/CodeMiniMap.tsx
+--- orig/src/client/components/CodeMiniMap.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/CodeMiniMap.tsx	1970-01-01 00:00:00.000000000 +0000
+@@ -1,270 +0,0 @@
+-import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+-import { ASTNode } from '../types';
+-
+-interface CodeMiniMapProps {
+-  code: string;
+-  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+-  selectedNode: ASTNode | null;
+-  onScrollToLine?: (lineIndex: number) => void;
+-}
+-
+-export function CodeMiniMap({
+-  code,
+-  textareaRef,
+-  selectedNode,
+-}: CodeMiniMapProps) {
+-  const containerRef = useRef<HTMLDivElement>(null);
+-  const canvasRef = useRef<HTMLCanvasElement>(null);
+-  const [isDragging, setIsDragging] = useState(false);
+-  const [hoverLine, setHoverLine] = useState<number | null>(null);
+-
+-  // Viewport tracking state
+-  const [viewport, setViewport] = useState<{
+-    top: number;
+-    height: number;
+-    visible: boolean;
+-  }>({ top: 0, height: 40, visible: true });
+-
+-  const lines = useMemo(() => code.split('\n'), [code]);
+-  const highlightStartRow = selectedNode ? selectedNode.startPoint.row : null;
+-  const highlightEndRow = selectedNode ? selectedNode.endPoint.row : null;
+-
+-  // Update viewport box from textarea scroll
+-  const updateViewportFromTextarea = useCallback(() => {
+-    const textarea = textareaRef.current;
+-    const container = containerRef.current;
+-    if (!textarea || !container) return;
+-
+-    const { scrollTop, scrollHeight, clientHeight } = textarea;
+-    const containerHeight = container.clientHeight;
+-
+-    if (scrollHeight <= clientHeight) {
+-      setViewport({ top: 0, height: containerHeight, visible: false });
+-      return;
+-    }
+-
+-    const ratio = containerHeight / scrollHeight;
+-    const boxHeight = Math.max(24, clientHeight * ratio);
+-    const boxTop = (scrollTop / (scrollHeight - clientHeight)) * (containerHeight - boxHeight);
+-
+-    setViewport({
+-      top: Math.max(0, Math.min(boxTop, containerHeight - boxHeight)),
+-      height: boxHeight,
+-      visible: true,
+-    });
+-  }, [textareaRef]);
+-
+-  // Hook textarea scroll event
+-  useEffect(() => {
+-    const textarea = textareaRef.current;
+-    if (!textarea) return;
+-
+-    updateViewportFromTextarea();
+-
+-    const handleScroll = () => {
+-      updateViewportFromTextarea();
+-    };
+-
+-    textarea.addEventListener('scroll', handleScroll, { passive: true });
+-    window.addEventListener('resize', updateViewportFromTextarea);
+-
+-    return () => {
+-      textarea.removeEventListener('scroll', handleScroll);
+-      window.removeEventListener('resize', updateViewportFromTextarea);
+-    };
+-  }, [textareaRef, updateViewportFromTextarea, code]);
+-
+-  // Draw code preview onto canvas
+-  useEffect(() => {
+-    const canvas = canvasRef.current;
+-    const container = containerRef.current;
+-    if (!canvas || !container) return;
+-
+-    const ctx = canvas.getContext('2d');
+-    if (!ctx) return;
+-
+-    const width = container.clientWidth || 96;
+-    const height = container.clientHeight || 300;
+-
+-    // Support High DPI
+-    const dpr = window.devicePixelRatio || 1;
+-    canvas.width = width * dpr;
+-    canvas.height = height * dpr;
+-    ctx.scale(dpr, dpr);
+-
+-    ctx.clearRect(0, 0, width, height);
+-
+-    const totalLines = lines.length;
+-    if (totalLines === 0) return;
+-
+-    const linePitch = height / Math.max(totalLines, 30);
+-    const lineHeight = Math.max(1, Math.min(linePitch * 0.75, 3));
+-
+-    // Render each line as micro-segments with indentation and syntax hints
+-    for (let i = 0; i < totalLines; i++) {
+-      const lineText = lines[i];
+-      const y = i * linePitch;
+-
+-      if (!lineText || lineText.trim().length === 0) continue;
+-
+-      // Calculate indent
+-      const trimmed = lineText.trimStart();
+-      const indentCount = lineText.length - trimmed.length;
+-      const xStart = Math.min(indentCount * 2.2 + 4, width - 20);
+-      const textLen = Math.min(trimmed.length * 1.3, width - xStart - 8);
+-
+-      // Determine color
+-      const isSelected =
+-        highlightStartRow !== null &&
+-        highlightEndRow !== null &&
+-        i >= highlightStartRow &&
+-        i <= highlightEndRow;
+-
+-      if (isSelected) {
+-        // Bright cyan for active AST node
+-        ctx.fillStyle = '#06b6d4';
+-        ctx.fillRect(2, y - 0.5, width - 4, Math.max(lineHeight + 1, 2.5));
+-      } else if (
+-        trimmed.startsWith('def ') ||
+-        trimmed.startsWith('class ') ||
+-        trimmed.startsWith('function ') ||
+-        trimmed.startsWith('fn ') ||
+-        trimmed.startsWith('func ')
+-      ) {
+-        ctx.fillStyle = '#38bdf8'; // Sky blue for definitions
+-        ctx.fillRect(xStart, y, textLen, lineHeight);
+-      } else if (
+-        trimmed.startsWith('import ') ||
+-        trimmed.startsWith('from ') ||
+-        trimmed.startsWith('use ') ||
+-        trimmed.startsWith('package ')
+-      ) {
+-        ctx.fillStyle = '#94a3b8'; // Slate for imports
+-        ctx.fillRect(xStart, y, textLen, lineHeight);
+-      } else if (
+-        trimmed.startsWith('if ') ||
+-        trimmed.startsWith('for ') ||
+-        trimmed.startsWith('while ') ||
+-        trimmed.startsWith('return ') ||
+-        trimmed.startsWith('else')
+-      ) {
+-        ctx.fillStyle = '#c084fc'; // Purple for control flow
+-        ctx.fillRect(xStart, y, textLen, lineHeight);
+-      } else if (trimmed.startsWith('#') || trimmed.startsWith('//') || trimmed.startsWith('/*')) {
+-        ctx.fillStyle = '#475569'; // Muted dark for comments
+-        ctx.fillRect(xStart, y, textLen, lineHeight);
+-      } else {
+-        ctx.fillStyle = '#64748b'; // Normal code token
+-        ctx.fillRect(xStart, y, textLen, lineHeight);
+-      }
+-    }
+-  }, [lines, highlightStartRow, highlightEndRow]);
+-
+-  // Scroll textarea to the requested mini-map Y coordinate
+-  const scrollToY = (clientY: number) => {
+-    const textarea = textareaRef.current;
+-    const container = containerRef.current;
+-    if (!textarea || !container) return;
+-
+-    const rect = container.getBoundingClientRect();
+-    const relativeY = Math.max(0, Math.min(clientY - rect.top, rect.height));
+-    const targetRatio = relativeY / rect.height;
+-
+-    const targetScrollTop = targetRatio * (textarea.scrollHeight - textarea.clientHeight);
+-    textarea.scrollTop = targetScrollTop;
+-  };
+-
+-  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+-    setIsDragging(true);
+-    scrollToY(e.clientY);
+-  };
+-
+-  useEffect(() => {
+-    const handleMouseMove = (e: MouseEvent) => {
+-      if (!isDragging) return;
+-      scrollToY(e.clientY);
+-    };
+-
+-    const handleMouseUp = () => {
+-      if (isDragging) setIsDragging(false);
+-    };
+-
+-    if (isDragging) {
+-      window.addEventListener('mousemove', handleMouseMove);
+-      window.addEventListener('mouseup', handleMouseUp);
+-    }
+-
+-    return () => {
+-      window.removeEventListener('mousemove', handleMouseMove);
+-      window.removeEventListener('mouseup', handleMouseUp);
+-    };
+-  }, [isDragging]);
+-
+-  const handleContainerMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+-    const container = containerRef.current;
+-    if (!container || lines.length === 0) return;
+-    const rect = container.getBoundingClientRect();
+-    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+-    const lineIndex = Math.min(
+-      lines.length - 1,
+-      Math.max(0, Math.floor((y / rect.height) * lines.length))
+-    );
+-    setHoverLine(lineIndex + 1);
+-  };
+-
+-  return (
+-    <div
+-      ref={containerRef}
+-      onMouseDown={handleMouseDown}
+-      onMouseMove={handleContainerMouseMove}
+-      onMouseLeave={() => setHoverLine(null)}
+-      className="w-24 bg-[#080c14] border-l border-slate-850 h-full relative select-none shrink-0 overflow-hidden cursor-pointer group"
+-      title="Mini-mapa de código: clique ou arraste para navegar rapidamente"
+-    >
+-      {/* Background Canvas */}
+-      <canvas ref={canvasRef} className="w-full h-full block" />
+-
+-      {/* Selected Node Glow Marker in Mini-map */}
+-      {highlightStartRow !== null && highlightEndRow !== null && (
+-        <div
+-          style={{
+-            top: `${(highlightStartRow / Math.max(lines.length, 1)) * 100}%`,
+-            height: `${Math.max(
+-              2,
+-              ((highlightEndRow - highlightStartRow + 1) / Math.max(lines.length, 1)) * 100
+-            )}%`,
+-          }}
+-          className="absolute left-0 right-0 bg-cyan-500/30 border-y border-cyan-400 pointer-events-none shadow-sm"
+-        />
+-      )}
+-
+-      {/* Viewport Lens / Slider */}
+-      {viewport.visible && (
+-        <div
+-          style={{
+-            top: `${viewport.top}px`,
+-            height: `${viewport.height}px`,
+-          }}
+-          className={`absolute left-0 right-0 bg-cyan-500/15 border-y border-cyan-400/60 pointer-events-none transition-opacity duration-75 ${
+-            isDragging ? 'bg-cyan-500/25 border-cyan-400' : 'group-hover:bg-cyan-500/20'
+-          }`}
+-        >
+-          {/* Subtle drag bar indicator */}
+-          <div className="absolute right-1 top-1 bottom-1 w-1 rounded-full bg-cyan-400/60" />
+-        </div>
+-      )}
+-
+-      {/* Hover Line Tooltip */}
+-      {hoverLine !== null && (
+-        <div
+-          className="absolute right-1 px-1.5 py-0.5 rounded bg-slate-900 border border-slate-700 text-cyan-300 font-mono text-[9px] pointer-events-none shadow-lg -translate-y-1/2"
+-          style={{
+-            top: `${((hoverLine - 1) / Math.max(lines.length, 1)) * 100}%`,
+-          }}
+-        >
+-          L{hoverLine}
+-        </div>
+-      )}
+-    </div>
+-  );
+-}
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/Header.tsx work/src/client/components/Header.tsx
+--- orig/src/client/components/Header.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/Header.tsx	1970-01-01 00:00:00.000000000 +0000
+@@ -1,147 +0,0 @@
+-import React, { useState } from 'react';
+-import { Network, Save, Copy, Check, Sparkles, Server, Terminal, HardDrive } from 'lucide-react';
+-import { ProjectInfo, PRESET_SNIPPETS } from '../types';
+-
+-interface HeaderProps {
+-  activeProject: string;
+-  activeFile: string;
+-  language: string;
+-  projects: ProjectInfo[];
+-  projectFiles: string[];
+-  onSelectProject: (proj: string) => void;
+-  onSelectFile: (file: string) => void;
+-  onSaveFile: () => void;
+-  onLoadPreset: (preset: (typeof PRESET_SNIPPETS)[0]) => void;
+-  onOpenMCPModal: () => void;
+-}
+-
+-export function Header({
+-  activeProject,
+-  activeFile,
+-  language,
+-  projects,
+-  projectFiles,
+-  onSelectProject,
+-  onSelectFile,
+-  onSaveFile,
+-  onLoadPreset,
+-  onOpenMCPModal,
+-}: HeaderProps) {
+-  const [showPresets, setShowPresets] = useState(false);
+-  const currentProject = projects.find((p) => p.name === activeProject);
+-
+-  return (
+-    <header className="h-14 border-b border-slate-800 bg-[#0b0f19] px-4 flex items-center justify-between shrink-0 select-none">
+-      {/* Zone 1: Brand Wordmark (Single text element) */}
+-      <div className="flex items-center gap-3">
+-        <div className="h-8 w-8 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+-          <Network className="w-4 h-4" />
+-        </div>
+-        <span className="font-semibold text-sm tracking-tight text-white flex items-center gap-2">
+-          TreeSitter MCP
+-          <span className="text-[11px] font-normal text-slate-400">· Studio</span>
+-        </span>
+-      </div>
+-
+-      {/* Zone 2: Breadcrumbs & Project/File Navigation with Isolated Path */}
+-      <div className="hidden md:flex items-center gap-2 text-xs">
+-        <span className="text-slate-400 font-medium">Projeto:</span>
+-        <select
+-          value={activeProject}
+-          onChange={(e) => onSelectProject(e.target.value)}
+-          className="bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-slate-200 text-xs focus:outline-none focus:border-cyan-500 hover:border-slate-600 transition"
+-        >
+-          {projects.map((p) => (
+-            <option key={p.name} value={p.name}>
+-              {p.name} — {p.path}
+-            </option>
+-          ))}
+-        </select>
+-
+-        {currentProject && (
+-          <span
+-            className="text-[10px] text-cyan-400/80 font-mono bg-slate-950 px-2 py-0.5 rounded border border-slate-800 truncate max-w-48 hidden lg:inline"
+-            title={`Caminho isolado do projeto: ${currentProject.path}`}
+-          >
+-            {currentProject.path}
+-          </span>
+-        )}
+-
+-        <span className="text-slate-600">/</span>
+-
+-        <span className="text-slate-400 font-medium">Arquivo:</span>
+-        <select
+-          value={activeFile}
+-          onChange={(e) => onSelectFile(e.target.value)}
+-          className="bg-slate-900 border border-slate-700/80 rounded-md px-2.5 py-1 text-slate-200 text-xs font-mono focus:outline-none focus:border-cyan-500 hover:border-slate-600 transition"
+-        >
+-          {projectFiles.map((f) => (
+-            <option key={f} value={f}>
+-              {f}
+-            </option>
+-          ))}
+-        </select>
+-
+-        <span className="px-2 py-0.5 rounded bg-slate-800 text-cyan-300 font-mono text-[11px] uppercase border border-slate-700">
+-          {language}
+-        </span>
+-      </div>
+-
+-      {/* Zone 3: Primary Action Controls */}
+-      <div className="flex items-center gap-2">
+-        {/* Presets dropdown */}
+-        <div className="relative">
+-          <button
+-            onClick={() => setShowPresets(!showPresets)}
+-            className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-md text-xs text-slate-200 flex items-center gap-1.5 transition"
+-            title="Carregar exemplo de código em outra linguagem"
+-          >
+-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+-            <span className="hidden sm:inline">Exemplos</span>
+-          </button>
+-
+-          {showPresets && (
+-            <div className="absolute right-0 mt-1 w-64 bg-slate-900 border border-slate-800 rounded-lg shadow-2xl py-1 z-50 text-xs">
+-              <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 border-b border-slate-800 uppercase tracking-wider">
+-                Exemplos de Código Multi-linguagem
+-              </div>
+-              {PRESET_SNIPPETS.map((ps) => (
+-                <button
+-                  key={ps.filename}
+-                  onClick={() => {
+-                    onLoadPreset(ps);
+-                    setShowPresets(false);
+-                  }}
+-                  className="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-300 flex items-center justify-between transition"
+-                >
+-                  <span className="truncate">{ps.name}</span>
+-                  <span className="text-[10px] font-mono text-cyan-400 uppercase">{ps.language}</span>
+-                </button>
+-              ))}
+-            </div>
+-          )}
+-        </div>
+-
+-        {/* Save button */}
+-        <button
+-          onClick={onSaveFile}
+-          className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-md text-xs text-slate-200 flex items-center gap-1.5 transition"
+-          title="Salvar alterações no arquivo"
+-        >
+-          <Save className="w-3.5 h-3.5 text-slate-400" />
+-          <span className="hidden sm:inline">Salvar</span>
+-        </button>
+-
+-        {/* MCP Connect modal button */}
+-        <button
+-          onClick={onOpenMCPModal}
+-          className="px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-md text-xs font-medium flex items-center gap-1.5 transition shadow-sm"
+-          title="Ver configurações para conectar Claude Desktop ou Cursor"
+-        >
+-          <Terminal className="w-3.5 h-3.5" />
+-          <span>Conectar MCP</span>
+-        </button>
+-      </div>
+-    </header>
+-  );
+-}
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/Sidebar.tsx work/src/client/components/Sidebar.tsx
+--- orig/src/client/components/Sidebar.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/Sidebar.tsx	1970-01-01 00:00:00.000000000 +0000
+@@ -1,139 +0,0 @@
+-import React from 'react';
+-import {
+-  Layers,
+-  Search,
+-  FileCode,
+-  BarChart3,
+-  GitCompare,
+-  Terminal,
+-  FolderTree,
+-  CheckCircle2,
+-  Cpu,
+-  Database,
+-  AlertTriangle,
+-} from 'lucide-react';
+-
+-export type NavTab = 'ast' | 'query' | 'symbols' | 'complexity' | 'similarity' | 'mcp' | 'projects' | 'database' | 'diagnostics';
+-
+-interface SidebarProps {
+-  activeTab: NavTab;
+-  onSelectTab: (tab: NavTab) => void;
+-  symbolsCount: number;
+-  diagnosticsCount?: number;
+-}
+-
+-export function Sidebar({ activeTab, onSelectTab, symbolsCount, diagnosticsCount = 0 }: SidebarProps) {
+-  const navItems = [
+-    {
+-      id: 'ast' as NavTab,
+-      label: 'AST Explorer',
+-      sublabel: 'Árvore Sintática',
+-      icon: Layers,
+-    },
+-    {
+-      id: 'diagnostics' as NavTab,
+-      label: 'Diagnósticos',
+-      sublabel: diagnosticsCount > 0 ? `${diagnosticsCount} erros detectados` : 'Sintaxe válida',
+-      icon: AlertTriangle,
+-    },
+-    {
+-      id: 'query' as NavTab,
+-      label: 'Query Studio',
+-      sublabel: 'Consultas S-Expr',
+-      icon: Search,
+-    },
+-    {
+-      id: 'symbols' as NavTab,
+-      label: 'Símbolos',
+-      sublabel: `${symbolsCount} declarados`,
+-      icon: FileCode,
+-    },
+-    {
+-      id: 'complexity' as NavTab,
+-      label: 'Complexidade',
+-      sublabel: 'Métricas & Risco',
+-      icon: BarChart3,
+-    },
+-    {
+-      id: 'similarity' as NavTab,
+-      label: 'Similaridade AST',
+-      sublabel: 'Fingerprint Jaccard',
+-      icon: GitCompare,
+-    },
+-    {
+-      id: 'mcp' as NavTab,
+-      label: 'Console MCP',
+-      sublabel: 'JSON-RPC / SSE',
+-      icon: Terminal,
+-    },
+-    {
+-      id: 'projects' as NavTab,
+-      label: 'Arquivos & Projetos',
+-      sublabel: 'Workspace',
+-      icon: FolderTree,
+-    },
+-    {
+-      id: 'database' as NavTab,
+-      label: 'Database',
+-      sublabel: 'SQLite Explorer',
+-      icon: Database,
+-    },
+-  ];
+-
+-  return (
+-    <aside className="w-60 border-r border-slate-800 bg-[#0d131f] flex flex-col justify-between shrink-0 select-none">
+-      {/* Top Nav Items */}
+-      <div className="p-3 space-y-1">
+-        <div className="px-2 py-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+-          Ferramentas Tree-sitter
+-        </div>
+-
+-        <nav className="space-y-0.5">
+-          {navItems.map((item) => {
+-            const Icon = item.icon;
+-            const isActive = activeTab === item.id;
+-            return (
+-              <button
+-                key={item.id}
+-                onClick={() => onSelectTab(item.id)}
+-                className={`w-full text-left px-3 py-2 rounded-lg text-xs font-medium flex items-center justify-between transition-colors ${
+-                  isActive
+-                    ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30'
+-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent'
+-                }`}
+-              >
+-                <div className="flex items-center gap-2.5 truncate">
+-                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-cyan-400' : 'text-slate-400'}`} />
+-                  <div className="truncate">
+-                    <div className="truncate text-slate-200">{item.label}</div>
+-                    <div className="text-[10px] text-slate-400 font-normal truncate">{item.sublabel}</div>
+-                  </div>
+-                </div>
+-              </button>
+-            );
+-          })}
+-        </nav>
+-      </div>
+-
+-      {/* Bottom Service Info Card */}
+-      <div className="p-3 border-t border-slate-800 bg-[#0a0e17]">
+-        <div className="bg-slate-900/80 p-2.5 rounded-lg border border-slate-800 text-xs space-y-1.5">
+-          <div className="flex items-center justify-between">
+-            <span className="text-slate-400 text-[11px] flex items-center gap-1.5">
+-              <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+-              Servidor MCP
+-            </span>
+-            <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-medium">
+-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+-              Ativo (3000)
+-            </span>
+-          </div>
+-
+-          <div className="text-[11px] text-slate-400">
+-            Tree-sitter Language Pack v0.6.1 + FastMCP Engine
+-          </div>
+-        </div>
+-      </div>
+-    </aside>
+-  );
+-}
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/TreeSitterInspectorModal.tsx work/src/client/components/TreeSitterInspectorModal.tsx
+--- orig/src/client/components/TreeSitterInspectorModal.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/TreeSitterInspectorModal.tsx	2026-10-06 04:45:06.827246761 +0000
+@@ -9,7 +9,7 @@
+   Code2,
+   AlertTriangle,
+ } from 'lucide-react';
+-import { NavTab } from './Sidebar';
++import { NavTab } from '../types';
+ import { ASTNode, QueryMatch, SymbolItem, CodeComplexity } from '../types';
+ 
+ import { ASTExplorerView } from './ASTExplorerView';
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/VSCodeActivityBar.tsx work/src/client/components/VSCodeActivityBar.tsx
+--- orig/src/client/components/VSCodeActivityBar.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/VSCodeActivityBar.tsx	2026-10-06 04:44:26.172588586 +0000
+@@ -1,6 +1,6 @@
+ import React from 'react';
+ import { FolderTree, Database, Terminal, Settings, AlertTriangle } from 'lucide-react';
+-import { NavTab } from './Sidebar';
++import { NavTab } from '../types';
+ 
+ interface VSCodeActivityBarProps {
+   activeTab: NavTab;
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/components/VSCodePrimarySideBar.tsx work/src/client/components/VSCodePrimarySideBar.tsx
+--- orig/src/client/components/VSCodePrimarySideBar.tsx	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/components/VSCodePrimarySideBar.tsx	2026-10-06 04:44:26.172311037 +0000
+@@ -14,7 +14,7 @@
+   Database,
+   CheckCircle2,
+ } from 'lucide-react';
+-import { NavTab } from './Sidebar';
++import { NavTab } from '../types';
+ import { ProjectInfo, SymbolItem, ASTNode } from '../types';
+ import { DiagnosticsPanel } from './DiagnosticsPanel';
+ 
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/client/types.ts work/src/client/types.ts
+--- orig/src/client/types.ts	2026-10-04 07:19:12.000000000 +0000
++++ work/src/client/types.ts	2026-10-06 04:44:26.171035294 +0000
+@@ -302,3 +302,5 @@
+ `,
+   },
+ ];
++
++export type NavTab = 'ast' | 'query' | 'symbols' | 'complexity' | 'similarity' | 'mcp' | 'projects' | 'database' | 'diagnostics';
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/server/__tests__/conformity.test.ts work/src/server/__tests__/conformity.test.ts
+--- orig/src/server/__tests__/conformity.test.ts	2026-10-04 07:19:12.000000000 +0000
++++ work/src/server/__tests__/conformity.test.ts	2026-10-06 04:46:13.683953969 +0000
+@@ -268,6 +268,20 @@
+       expect(refs.every((r) => r.startByte >= 0 && r.endByte > r.startByte)).toBe(true);
+     });
+ 
++    it('findReferences não trunca em arquivos com mais de 100 identificadores', async () => {
++      const filler = Array.from({ length: 300 }, (_, i) => `const v${i} = ${i};`).join('\n');
++      const content = `${filler}\nfunction alvoUnico() {}\nalvoUnico();\n`;
++      const proj: Project = {
++        name: 'big',
++        path: '/big',
++        files: new Map<string, ProjectFile>([
++          ['big.js', { path: 'big.js', language: 'javascript', content, sizeBytes: content.length, lastModified: new Date().toISOString() }],
++        ]),
++      } as Project;
++      const refs = await findReferences(proj, 'alvoUnico', 'javascript', languageRegistry);
++      expect(refs.length).toBe(2);
++    });
++
+     it('safeReplaceNode handles UTF-8 unicode/emojis and rejects edits with syntax errors', async () => {
+       const proj = createTestProject();
+       const unicodeFile = `// Comentário com acentuação: Olá mundo! 🚀\nfunction greet() {\n  return "Olá";\n}\n`;
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/server/__tests__/queryEngine.test.ts work/src/server/__tests__/queryEngine.test.ts
+--- orig/src/server/__tests__/queryEngine.test.ts	2026-10-04 07:19:12.000000000 +0000
++++ work/src/server/__tests__/queryEngine.test.ts	2026-10-06 04:44:26.173280019 +0000
+@@ -70,24 +70,16 @@
+ });
+ 
+ describe('MCP Protocol Extensions', () => {
+-  it('declares register_project_tool and cache tools in MCP_TOOLS_METADATA', () => {
++  it('declares register_project_tool and get_node_types in MCP_TOOLS_METADATA', () => {
+     const names = MCP_TOOLS_METADATA.map((t) => t.name);
+     expect(names).toContain('register_project_tool');
+     expect(names).toContain('get_node_types');
+-    expect(names).toContain('clear_cache');
+-    expect(names).toContain('configure');
+   });
+ 
+-  it('clears AST cache and updates runtime configuration', async () => {
+-    const clearRes = await handleMCPToolCall('clear_cache', {});
+-    expect(clearRes.status).toBe('success');
+-
+-    const configRes = await handleMCPToolCall('configure', {
+-      cache_enabled: true,
+-      max_file_size_mb: 25,
+-      log_level: 'DEBUG',
+-    });
+-    expect(configRes.security.max_file_size_mb).toBe(25);
+-    expect(configRes.log_level).toBe('DEBUG');
++  it('does not expose admin tools (configure, cache, isolation audit) over MCP', () => {
++    const names = MCP_TOOLS_METADATA.map((t) => t.name);
++    for (const n of ['configure', 'clear_cache', 'get_cache_stats', 'audit_project_isolation']) {
++      expect(names).not.toContain(n);
++    }
+   });
+ });
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/server/mcp.ts work/src/server/mcp.ts
+--- orig/src/server/mcp.ts	2026-10-04 07:29:07.000000000 +0000
++++ work/src/server/mcp.ts	2026-10-06 04:46:13.683325613 +0000
+@@ -33,7 +33,6 @@
+   analyzeFunctionComplexity,
+ } from './operations';
+ import { adaptQuery, buildCompoundQuery, getTemplate, describeNodeTypes } from './queryBuilder';
+-import { serverConfig } from './config';
+ 
+ export const MCP_TOOLS_METADATA = [
+   {
+@@ -318,16 +317,6 @@
+     },
+   },
+   {
+-    name: 'audit_project_isolation',
+-    description: 'Audit workspace isolation compliance for a project to verify no file leaks or cross-contamination.',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        project: { type: 'string', description: 'Project name to audit' },
+-      },
+-    },
+-  },
+-  {
+     name: 'register_project_tool',
+     description: 'Register a new project in the workspace.',
+     inputSchema: {
+@@ -351,43 +340,8 @@
+       required: ['language'],
+     },
+   },
+-  {
+-    name: 'clear_cache',
+-    description: 'Clear internal AST and query result caches.',
+-    inputSchema: { type: 'object', properties: {} },
+-  },
+-  {
+-    name: 'get_cache_stats',
+-    description: 'Get tree cache statistics including size and entries count.',
+-    inputSchema: { type: 'object', properties: {} },
+-  },
+-  {
+-    name: 'configure',
+-    description: 'Update server configuration such as caching, file limits, or log level.',
+-    inputSchema: {
+-      type: 'object',
+-      properties: {
+-        cache_enabled: { type: 'boolean', description: 'Enable or disable AST cache' },
+-        max_file_size_mb: { type: 'number', description: 'Max allowed file size in MB' },
+-        log_level: { type: 'string', description: 'Log level (DEBUG, INFO, WARN, ERROR)' },
+-      },
+-    },
+-  },
+ ];
+ 
+-// Global runtime MCP configuration
+-export const mcpConfig = {
+-  cacheEnabled: true,
+-  maxFileSizeMb: 10,
+-  logLevel: 'INFO',
+-};
+-
+-export function clearASTCache(): number {
+-  const stats = treeCache.getStats();
+-  treeCache.invalidate();
+-  return stats.entriesCount;
+-}
+-
+ export const MCP_PROMPTS_METADATA = [
+   {
+     name: 'code_review',
+@@ -744,45 +698,6 @@
+       return describeNodeTypes(args.language);
+     }
+ 
+-    case 'clear_cache': {
+-      const clearedCount = clearASTCache();
+-      return {
+-        status: 'success',
+-        message: `Parse tree caches successfully cleared (${clearedCount} cached entries removed)`,
+-      };
+-    }
+-
+-    case 'get_cache_stats': {
+-      return treeCache.getStats();
+-    }
+-
+-    case 'configure': {
+-      if (typeof args.cache_enabled === 'boolean') {
+-        mcpConfig.cacheEnabled = args.cache_enabled;
+-        treeCache.setEnabled(args.cache_enabled);
+-      }
+-      if (typeof args.max_file_size_mb === 'number') {
+-        mcpConfig.maxFileSizeMb = args.max_file_size_mb;
+-        serverConfig.updateValue('security.max_file_size_mb', args.max_file_size_mb);
+-      }
+-      if (typeof args.log_level === 'string') {
+-        mcpConfig.logLevel = args.log_level;
+-        serverConfig.updateValue('log_level', args.log_level);
+-      }
+-      return {
+-        cache: treeCache.getStats(),
+-        security: serverConfig.getConfig().security,
+-        log_level: serverConfig.getConfig().log_level,
+-      };
+-    }
+-
+-    case 'audit_project_isolation': {
+-      const proj = args.project || 'tree-sitter-core';
+-      const report = projectStore.auditIsolation(proj);
+-      if (!report) throw new Error(`Project '${proj}' not found`);
+-      return report;
+-    }
+-
+     default:
+       throw new Error(`Unknown MCP tool: ${name}`);
+   }
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/server/operations.ts work/src/server/operations.ts
+--- orig/src/server/operations.ts	2026-10-05 03:00:33.000000000 +0000
++++ work/src/server/operations.ts	2026-10-06 04:46:51.984491567 +0000
+@@ -851,7 +851,10 @@
+ 
+     const queryStr = getIdentifierQueryForLanguage(parsed.tsLanguage);
+     try {
+-      const matches = executeNativeQuery(parsed.tree, parsed.tsLanguage, queryStr);
++      // Sem limite: o padrão (100 matches/arquivo) truncava usos em arquivos grandes.
++      const matches = executeNativeQuery(parsed.tree, parsed.tsLanguage, queryStr, {
++        maxResults: Number.MAX_SAFE_INTEGER,
++      });
+       for (const m of matches) {
+         for (const cap of m.captures || []) {
+           if (cap.text === symbolName) {
+diff -ruN '--exclude=node_modules' '--exclude=dist' '--exclude=engine-dist' orig/src/server/store.ts work/src/server/store.ts
+--- orig/src/server/store.ts	2026-10-05 03:01:47.000000000 +0000
++++ work/src/server/store.ts	2026-10-06 04:44:39.408704313 +0000
+@@ -49,208 +49,6 @@
+   return result;
+ }
+ 
+-// Preload demo projects
+-function initDefaultProjects() {
+-  const treeSitterProject: Project = {
+-    name: 'tree-sitter-core',
+-    path: '/projects/tree-sitter-core',
+-    description: 'Tree-sitter AST analysis demo repository with Python, TypeScript, Go, and Rust sources',
+-    files: new Map<string, ProjectFile>(),
+-  };
+-
+-  const samplePython = `import os
+-import sys
+-from typing import Any, Dict, List, Optional
+-
+-class TreeSitterAnalyzer:
+-    """Core code analyzer powered by Tree-sitter AST parsing."""
+-
+-    def __init__(self, language: str, cache_enabled: bool = True):
+-        self.language = language
+-        self.cache_enabled = cache_enabled
+-        self.node_count = 0
+-
+-    def parse_source(self, code: str) -> Dict[str, Any]:
+-        """Parse source code string into an AST dictionary."""
+-        if not code.strip():
+-            return {"status": "empty", "nodes": []}
+-
+-        # Analyze structure
+-        tree = self._build_ast(code)
+-        symbols = self.extract_symbols(tree)
+-        return {
+-            "language": self.language,
+-            "symbols": symbols,
+-            "root_type": tree.get("type", "module")
+-        }
+-
+-    def extract_symbols(self, node: Dict[str, Any]) -> List[str]:
+-        """Extract declared function and class symbols from AST."""
+-        results = []
+-        for child in node.get("children", []):
+-            if child.get("type") in ("function_definition", "class_definition"):
+-                results.append(child.get("name", "anonymous"))
+-        return results
+-
+-    def _build_ast(self, code: str) -> Dict[str, Any]:
+-        return {"type": "module", "children": []}
+-
+-def format_report(project_name: str, symbol_count: int) -> str:
+-    """Format an analysis summary report for CLI output."""
+-    header = f"Analysis Report for {project_name}"
+-    divider = "=" * len(header)
+-    return f"{header}\\n{divider}\\nFound {symbol_count} primary symbols."
+-
+-if __name__ == "__main__":
+-    analyzer = TreeSitterAnalyzer("python")
+-    result = analyzer.parse_source("def hello(): pass")
+-    print(format_report("DemoProject", len(result["symbols"])))
+-`;
+-
+-  const sampleTypeScript = `import { useState, useEffect } from 'react';
+-
+-export interface ASTNodeView {
+-  id: string;
+-  type: string;
+-  isNamed: boolean;
+-  field?: string;
+-  startByte: number;
+-  endByte: number;
+-}
+-
+-export class TreeSitterClient {
+-  private endpoint: string;
+-
+-  constructor(endpoint: string = '/api/mcp') {
+-    this.endpoint = endpoint;
+-  }
+-
+-  async runQuery(query: string, code: string): Promise<any> {
+-    const payload = {
+-      jsonrpc: '2.0',
+-      id: Date.now(),
+-      method: 'tools/call',
+-      params: {
+-        name: 'run_query',
+-        arguments: { query, code }
+-      }
+-    };
+-
+-    const res = await fetch(this.endpoint, {
+-      method: 'POST',
+-      headers: { 'Content-Type': 'application/json' },
+-      body: JSON.stringify(payload)
+-    });
+-
+-    if (!res.ok) {
+-      throw new Error('MCP query execution failed: ' + res.statusText);
+-    }
+-    return res.json();
+-  }
+-}
+-
+-export function useASTExplorer(initialCode: string) {
+-  const [code, setCode] = useState<string>(initialCode);
+-  const [selectedNode, setSelectedNode] = useState<ASTNodeView | null>(null);
+-
+-  useEffect(() => {
+-  }, [code]);
+-
+-  return { code, setCode, selectedNode, setSelectedNode };
+-}
+-`;
+-
+-  const sampleGo = `package main
+-
+-import (
+-	"context"
+-	"fmt"
+-	"sync"
+-)
+-
+-type ParserConfig struct {
+-	MaxDepth int
+-	Verbose  bool
+-}
+-
+-type NodeWalker struct {
+-	mu     sync.RWMutex
+-	nodes  []string
+-	config ParserConfig
+-}
+-
+-func NewNodeWalker(cfg ParserConfig) *NodeWalker {
+-	return &NodeWalker{
+-		config: cfg,
+-		nodes:  make([]string, 0),
+-	}
+-}
+-
+-func (nw *NodeWalker) Walk(ctx context.Context, root string) error {
+-	nw.mu.Lock()
+-	defer nw.mu.Unlock()
+-
+-	select {
+-	case <-ctx.Done():
+-		return ctx.Err()
+-	default:
+-		nw.nodes = append(nw.nodes, root)
+-		fmt.Printf("Parsed root AST element: %s\\n", root)
+-		return nil
+-	}
+-}
+-
+-func main() {
+-	cfg := ParserConfig{MaxDepth: 10, Verbose: true}
+-	walker := NewNodeWalker(cfg)
+-	ctx := context.Background()
+-	_ = walker.Walk(ctx, "source_file")
+-}
+-`;
+-
+-  const sampleRust = `use std::collections::HashMap;
+-
+-pub struct QueryMatcher {
+-    pattern: String,
+-    captures: HashMap<String, usize>,
+-}
+-
+-impl QueryMatcher {
+-    pub fn new(pattern: &str) -> Self {
+-        QueryMatcher {
+-            pattern: pattern.to_string(),
+-            captures: HashMap::new(),
+-        }
+-    }
+-
+-    pub fn matches(&mut self, node_type: &str) -> bool {
+-        if node_type == self.pattern {
+-            *self.captures.entry(node_type.to_string()).or_insert(0) += 1;
+-            true
+-        } else {
+-            false
+-        }
+-    }
+-}
+-
+-pub fn analyze_syntax_tree(root_type: &str) -> Result<usize, String> {
+-    let mut matcher = QueryMatcher::new("function_item");
+-    if matcher.matches(root_type) {
+-        Ok(1)
+-    } else {
+-        Err("No matching function found".to_string())
+-    }
+-}
+-`;
+-
+-  addFileToProject(treeSitterProject, 'analyzer.py', samplePython);
+-  addFileToProject(treeSitterProject, 'client.ts', sampleTypeScript);
+-  addFileToProject(treeSitterProject, 'walker.go', sampleGo);
+-  addFileToProject(treeSitterProject, 'matcher.rs', sampleRust);
+-
+-  projects.set(treeSitterProject.name, treeSitterProject);
+-}
+-
+ const MB = 1024 * 1024;
+ 
+ function readLimitMb(name: string, fallback: number): number {

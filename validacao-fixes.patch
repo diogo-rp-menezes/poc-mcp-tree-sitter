@@ -1,0 +1,1724 @@
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/App.tsx b/src/client/App.tsx
+--- a/src/client/App.tsx	2026-10-06 04:44:26.000000000 +0000
++++ b/src/client/App.tsx	2026-10-06 05:43:20.512174492 +0000
+@@ -91,7 +91,7 @@
+   // AST state
+   const [ast, setAst] = useState<ASTNode | null>(null);
+   const [selectedNode, setSelectedNode] = useState<ASTNode | null>(null);
+-  const [maxAstDepth, setMaxAstDepth] = useState<number>(5);
++  const [maxAstDepth, setMaxAstDepth] = useState<number>(3);
+ 
+   // Query state
+   const [queryInput, setQueryInput] = useState<string>(
+@@ -317,6 +317,21 @@
+     }
+   }
+ 
++  // Ao trocar de arquivo/linguagem, a query volta ao modelo "functions" da nova linguagem
++  // (evita rodar uma query Python em um arquivo TypeScript no primeiro uso).
++  const queryLanguageRef = useRef<string | null>(null);
++  useEffect(() => {
++    const langTemplates = templates[language];
++    if (!langTemplates) return;
++    if (queryLanguageRef.current === language) return;
++    queryLanguageRef.current = language;
++    const first = langTemplates['functions'] ? 'functions' : Object.keys(langTemplates)[0];
++    if (first) {
++      setSelectedTemplate(first);
++      setQueryInput(langTemplates[first]);
++    }
++  }, [language, templates]);
++
+   async function handleRunQuery() {
+     setLoading(true);
+     setErrorMsg(null);
+@@ -330,7 +345,17 @@
+           language,
+         }),
+       });
+-      if (!res.ok) throw new Error(await res.text());
++      if (!res.ok) {
++        const raw = await res.text();
++        let friendly = raw;
++        try {
++          const parsed = JSON.parse(raw);
++          friendly = parsed.message || parsed.error || raw;
++        } catch {
++          /* corpo não é JSON */
++        }
++        throw new Error(friendly);
++      }
+       const data = await res.json();
+       setQueryMatches(data);
+       showToast(`Consulta executada: ${data.length} nós correspondentes encontrados!`);
+@@ -343,7 +368,7 @@
+ 
+   function handleSelectTemplate(tplName: string) {
+     setSelectedTemplate(tplName);
+-    const langTemplates = templates[language] || templates['python'] || {};
++    const langTemplates = templates[language] || {};
+     if (langTemplates[tplName]) {
+       setQueryInput(langTemplates[tplName]);
+     }
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/components/CodeEditor.tsx b/src/client/components/CodeEditor.tsx
+--- a/src/client/components/CodeEditor.tsx	2026-10-06 04:44:26.000000000 +0000
++++ b/src/client/components/CodeEditor.tsx	2026-10-06 05:43:20.511228632 +0000
+@@ -415,11 +415,13 @@
+           <div className="flex items-center gap-1.5 font-mono pr-2.5 border-r border-[#383838]">
+             <Code2 className="w-3.5 h-3.5 text-cyan-400" />
+             <span className="font-semibold text-slate-200 text-xs truncate max-w-36">
+-              {filename || 'codigo.py'}
+-            </span>
+-            <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#1e1e1e] border border-[#3c3c3c] text-cyan-300 uppercase font-mono">
+-              {monacoLanguage}
++              {filename || 'Nenhum arquivo aberto'}
+             </span>
++            {filename && (
++              <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#1e1e1e] border border-[#3c3c3c] text-cyan-300 uppercase font-mono">
++                {monacoLanguage}
++              </span>
++            )}
+             {isDirty && (
+               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" title="Alterações não salvas" />
+             )}
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/components/MCPConnectModal.tsx b/src/client/components/MCPConnectModal.tsx
+--- a/src/client/components/MCPConnectModal.tsx	2026-10-04 07:19:12.000000000 +0000
++++ b/src/client/components/MCPConnectModal.tsx	2026-10-06 05:43:27.303482289 +0000
+@@ -25,6 +25,7 @@
+         },
+         'tree-sitter-studio-http': {
+           url: `${currentOrigin}/api/mcp`,
++          headers: { Authorization: 'Bearer <SUA_API_KEY_OU_JWT>' },
+         },
+       },
+     },
+@@ -69,7 +70,10 @@
+           <p className="text-slate-300 leading-relaxed text-xs">
+             Para permitir que assistentes de IA (Claude Desktop, Cursor, Continue.dev, Zed) usem as ferramentas de
+             análise de código e Tree-sitter deste servidor, adicione a configuração abaixo ao seu arquivo{' '}
+-            <code className="bg-slate-950 px-1.5 py-0.5 rounded text-cyan-300 font-mono">claude_desktop_config.json</code>:
++            <code className="bg-slate-950 px-1.5 py-0.5 rounded text-cyan-300 font-mono">claude_desktop_config.json</code>:{' '}
++            Substitua <code className="bg-slate-950 px-1.5 py-0.5 rounded text-cyan-300 font-mono">&lt;SUA_API_KEY_OU_JWT&gt;</code>{' '}
++            pelo token do servidor: sem o cabeçalho <code className="bg-slate-950 px-1.5 py-0.5 rounded text-cyan-300 font-mono">Authorization</code>{' '}
++            as chamadas retornam 401.
+           </p>
+ 
+           <div className="relative">
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/components/ProjectManagerView.tsx b/src/client/components/ProjectManagerView.tsx
+--- a/src/client/components/ProjectManagerView.tsx	2026-10-04 07:19:12.000000000 +0000
++++ b/src/client/components/ProjectManagerView.tsx	2026-10-06 05:43:34.239912643 +0000
+@@ -87,6 +87,15 @@
+ 
+   // Scan Directory Modal States
+   const [showScanModal, setShowScanModal] = useState(false);
++
++  useEffect(() => {
++    if (!showScanModal) return;
++    const onKeyDown = (e: KeyboardEvent) => {
++      if (e.key === 'Escape') setShowScanModal(false);
++    };
++    window.addEventListener('keydown', onKeyDown);
++    return () => window.removeEventListener('keydown', onKeyDown);
++  }, [showScanModal]);
+   const [scanMode, setScanMode] = useState<'server' | 'browser'>('server');
+   const [scanServerPath, setScanServerPath] = useState('/workspace');
+   const [scanCustomName, setScanCustomName] = useState('');
+@@ -311,7 +320,7 @@
+ 
+       const data = await res.json();
+       if (!res.ok) {
+-        throw new Error(data.error || 'Erro ao escanear diretório.');
++        throw new Error(data.message || data.error || 'Erro ao escanear diretório.');
+       }
+ 
+       setShowScanModal(false);
+@@ -432,7 +441,7 @@
+ 
+       const data = await res.json();
+       if (!res.ok) {
+-        throw new Error(data.error || 'Erro ao importar pasta do navegador.');
++        throw new Error(data.message || data.error || 'Erro ao importar pasta do navegador.');
+       }
+ 
+       setShowScanModal(false);
+@@ -517,7 +526,7 @@
+ 
+       const data = await res.json();
+       if (!res.ok) {
+-        throw new Error(data.error || 'Falha ao importar repositório do GitHub.');
++        throw new Error(data.message || data.error || 'Falha ao importar repositório do GitHub.');
+       }
+ 
+       setGitHubSuccess(`Importado com sucesso: ${data.filesCount} arquivos salvos!`);
+@@ -696,7 +705,7 @@
+         }),
+       });
+       const data = await res.json();
+-      if (!res.ok) throw new Error(data.error || 'Falha ao atualizar projeto.');
++      if (!res.ok) throw new Error(data.message || data.error || 'Falha ao atualizar projeto.');
+       setEditingProject(null);
+       onRefreshProjects();
+       fetchOverviews();
+@@ -734,7 +743,7 @@
+         }),
+       });
+       const data = await res.json();
+-      if (!res.ok) throw new Error(data.error || 'Falha ao clonar projeto.');
++      if (!res.ok) throw new Error(data.message || data.error || 'Falha ao clonar projeto.');
+       setCloningProject(null);
+       onRefreshProjects();
+       fetchOverviews();
+@@ -1035,10 +1044,10 @@
+                     <div className="bg-slate-900/90 p-4 rounded-xl border border-slate-800 space-y-1">
+                       <div className="text-slate-400 text-xs font-medium flex items-center gap-1.5">
+                         <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+-                        Camada de Isolamento
++                        Projetos Isolados
+                       </div>
+-                      <div className="text-2xl font-bold font-mono text-cyan-400">100%</div>
+-                      <div className="text-[11px] text-slate-500">Zero contaminação cruzada</div>
++                      <div className="text-2xl font-bold font-mono text-cyan-400">{projectOverviews.length}</div>
++                      <div className="text-[11px] text-slate-500">Cada projeto tem seu próprio escopo de arquivos</div>
+                     </div>
+                   </div>
+ 
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/components/ProjectVisualSummary.tsx b/src/client/components/ProjectVisualSummary.tsx
+--- a/src/client/components/ProjectVisualSummary.tsx	2026-10-04 07:19:12.000000000 +0000
++++ b/src/client/components/ProjectVisualSummary.tsx	2026-10-06 05:43:20.507186075 +0000
+@@ -40,6 +40,12 @@
+   java: '#ef4444', // Red
+   cpp: '#a855f7', // Purple
+   c: '#8b5cf6', // Violet
++  tsx: '#14b8a6', // Teal
++  css: '#ec4899', // Pink
++  html: '#f43f5e', // Rose
++  yaml: '#84cc16', // Lime
++  sql: '#d946ef', // Fuchsia
++  toml: '#fb923c', // Light orange
+   markdown: '#64748b', // Slate
+   json: '#eab308', // Amber
+   unknown: '#475569',
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/components/QueryStudioView.tsx b/src/client/components/QueryStudioView.tsx
+--- a/src/client/components/QueryStudioView.tsx	2026-10-04 07:19:12.000000000 +0000
++++ b/src/client/components/QueryStudioView.tsx	2026-10-06 05:43:20.512347931 +0000
+@@ -37,7 +37,7 @@
+   onSelectTemplate,
+   onRunQuery,
+ }: QueryStudioViewProps) {
+-  const availableTemplates = templates[language] || templates['python'] || {};
++  const availableTemplates = templates[language] || {};
+ 
+   const handleQuickInsert = (snippet: string) => {
+     onChangeQuery(queryInput + '\n' + snippet);
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/main.tsx b/src/client/main.tsx
+--- a/src/client/main.tsx	2026-10-04 07:24:49.000000000 +0000
++++ b/src/client/main.tsx	2026-10-06 05:42:43.188668156 +0000
+@@ -1,3 +1,4 @@
++import './monacoSetup';
+ import React from 'react';
+ import ReactDOM from 'react-dom/client';
+ import App from './App';
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/client/monacoSetup.ts b/src/client/monacoSetup.ts
+--- a/src/client/monacoSetup.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/client/monacoSetup.ts	2026-10-06 05:42:43.167593760 +0000
+@@ -0,0 +1,36 @@
++/**
++ * Monaco empacotado localmente (sem CDN): o loader padrão do @monaco-editor/react baixa o editor
++ * de cdn.jsdelivr.net, o que quebra o desktop offline. Aqui apontamos o loader para a instância
++ * local de `monaco-editor` e registramos os workers via Vite (`?worker`).
++ */
++import { loader } from '@monaco-editor/react';
++import * as monaco from 'monaco-editor';
++import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
++import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
++import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
++import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
++import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
++
++(self as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
++  getWorker(_workerId: string, label: string): Worker {
++    switch (label) {
++      case 'json':
++        return new jsonWorker();
++      case 'css':
++      case 'scss':
++      case 'less':
++        return new cssWorker();
++      case 'html':
++      case 'handlebars':
++      case 'razor':
++        return new htmlWorker();
++      case 'typescript':
++      case 'javascript':
++        return new tsWorker();
++      default:
++        return new editorWorker();
++    }
++  },
++};
++
++loader.config({ monaco });
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/__tests__/httpIntegration.test.ts b/src/server/__tests__/httpIntegration.test.ts
+--- a/src/server/__tests__/httpIntegration.test.ts	2026-10-04 07:30:56.000000000 +0000
++++ b/src/server/__tests__/httpIntegration.test.ts	2026-10-06 05:43:58.358958706 +0000
+@@ -169,3 +169,67 @@
+     expect(Array.isArray(await res.json())).toBe(true);
+   });
+ });
++
++describe('escrita fora das roots (A1)', () => {
++  const post = (url: string, body: unknown) =>
++    fetch(`${base}${url}`, { method: 'POST', headers: { ...auth, ...json }, body: JSON.stringify(body) });
++
++  it('batch-create, POST /api/projects e PUT recusam path fora das roots', async () => {
++    const outside = path.join(os.tmpdir(), 'escape-test-http');
++    const files = [{ path: 'pwned.txt', content: 'x' }];
++    expect((await post('/api/projects/batch-create', { name: 'esc1', path: outside, files })).status).toBe(403);
++    expect((await post('/api/projects', { name: 'esc2', path: outside })).status).toBe(403);
++
++    await post('/api/projects', { name: 'esc3', path: path.join(root, 'esc3') });
++    const put = await fetch(`${base}/api/projects/esc3`, {
++      method: 'PUT',
++      headers: { ...auth, ...json },
++      body: JSON.stringify({ path: outside }),
++    });
++    expect(put.status).toBe(403);
++    expect(fs.existsSync(outside)).toBe(false);
++  });
++
++  it('git-sync não escreve quando o projeto aponta para fora das roots', async () => {
++    // Projeto registrado diretamente no store (como faria uma ferramenta MCP) com path fora da root.
++    const { projectStore } = await import('../store');
++    const outside = path.join(os.tmpdir(), 'escape-test-sync');
++    projectStore.createProject('esc-sync', outside);
++    projectStore.saveFile('esc-sync', 'pwned.txt', 'x');
++    expect((await post('/api/projects/esc-sync/git-sync', {})).status).toBe(403);
++    expect((await post('/api/projects/esc-sync/git-init', {})).status).toBe(403);
++    expect(fs.existsSync(path.join(outside, 'pwned.txt'))).toBe(false);
++  });
++
++  it('git-sync funciona dentro da root', async () => {
++    const dir = path.join(root, 'ok-sync');
++    expect((await post('/api/projects/batch-create', { name: 'ok-sync', path: dir, files: [{ path: 'sub/y.ts', content: 'export {}' }] })).status).toBe(200);
++    expect((await post('/api/projects/ok-sync/git-sync', {})).status).toBe(200);
++    expect(fs.readFileSync(path.join(dir, 'sub/y.ts'), 'utf-8')).toBe('export {}');
++  });
++
++  it('batch-create informa os arquivos descartados', async () => {
++    const res = await post('/api/projects/batch-create', {
++      name: 'skip-test',
++      files: [
++        { path: 'ok.ts', content: 'export {}' },
++        { path: '../evil.ts', content: 'x' },
++      ],
++    });
++    const body = await res.json();
++    expect(body.filesCount).toBe(1);
++    expect(body.skipped).toEqual([{ path: '../evil.ts', reason: 'path_rejected_by_isolation' }]);
++  });
++});
++
++describe('clone/update com status corretos (A4)', () => {
++  const post = (url: string, body: unknown) =>
++    fetch(`${base}${url}`, { method: 'POST', headers: { ...auth, ...json }, body: JSON.stringify(body) });
++
++  it('clone de projeto inexistente -> 404 e nome repetido -> 409', async () => {
++    expect((await post('/api/projects/nope/clone', { targetName: 'whatever' })).status).toBe(404);
++    await post('/api/projects', { name: 'clone-src' });
++    await post('/api/projects/clone-src/clone', { targetName: 'clone-dst' });
++    expect((await post('/api/projects/clone-src/clone', { targetName: 'clone-dst' })).status).toBe(409);
++  });
++});
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/__tests__/projectHardening.test.ts b/src/server/__tests__/projectHardening.test.ts
+--- a/src/server/__tests__/projectHardening.test.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/server/__tests__/projectHardening.test.ts	2026-10-06 06:06:59.487848860 +0000
+@@ -0,0 +1,146 @@
++import { describe, it, expect, afterAll } from 'vitest';
++import fs from 'fs';
++import os from 'os';
++import path from 'path';
++import { projectStore, globToRegExp } from '../store';
++import { validateWritableProjectPath, parseWorkspaceRootsConfig, setActiveWorkspaceRoots } from '../workspaceRoots';
++import { buildCompoundQuery } from '../queryBuilder';
++import { handleMCPToolCall, handleMCPPrompt } from '../mcp';
++import { syncProjectFilesToDisk } from '../git';
++import { initTreeSitter } from '../treeSitter';
++import { detectLanguage, parseSourceToASTAsync } from '../parser';
++import type { ASTNode } from '../types';
++
++const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hardening-')));
++const config = parseWorkspaceRootsConfig({ MCP_ALLOWED_WORKSPACE_ROOTS: root } as NodeJS.ProcessEnv);
++setActiveWorkspaceRoots(config);
++
++afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
++
++describe('validateWritableProjectPath', () => {
++  it('aceita caminhos (inclusive inexistentes) dentro da root', () => {
++    expect(validateWritableProjectPath(path.join(root, 'novo/sub'), config).ok).toBe(true);
++    expect(validateWritableProjectPath(root, config).ok).toBe(true);
++  });
++  it('recusa fora da root, traversal e prefixo irmão', () => {
++    expect((validateWritableProjectPath('/etc', config) as any).status).toBe(403);
++    expect((validateWritableProjectPath(path.join(root, '..', 'x'), config) as any).status).toBe(403);
++    expect((validateWritableProjectPath(root + '-2', config) as any).status).toBe(403);
++    expect((validateWritableProjectPath('', config) as any).status).toBe(400);
++  });
++  it('recusa symlink que escapa mesmo com destino inexistente', () => {
++    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'hardening-out-'));
++    try {
++      fs.symlinkSync(outside, path.join(root, 'link'), 'dir');
++      expect((validateWritableProjectPath(path.join(root, 'link', 'novo'), config) as any).status).toBe(403);
++    } finally {
++      fs.rmSync(outside, { recursive: true, force: true });
++    }
++  });
++});
++
++describe('syncProjectFilesToDisk', () => {
++  it('ignora arquivos que escapam do diretório do projeto', () => {
++    const dir = path.join(root, 'sync');
++    const res = syncProjectFilesToDisk(dir, [
++      { path: 'a.ts', content: '1' },
++      { path: '../escaped.ts', content: '2' },
++    ]);
++    expect(res.syncedCount).toBe(1);
++    expect(res.skipped).toEqual(['../escaped.ts']);
++    expect(fs.existsSync(path.join(root, 'escaped.ts'))).toBe(false);
++  });
++});
++
++describe('list_files (extensões e globs)', () => {
++  projectStore.createProject('lf', '/projects/lf');
++  for (const f of ['a.ts', 'src/b.ts', 'src/c.tsx', 'src/deep/d.tsx', 'README.md']) projectStore.saveFile('lf', f, 'x');
++
++  it('extensions aceita ".ts", "ts" e "TS"', () => {
++    for (const ext of ['.ts', 'ts', 'TS']) {
++      expect(projectStore.listFiles('lf', undefined, [ext]).sort()).toEqual(['a.ts', 'src/b.ts']);
++    }
++  });
++  it('globs relativos à raiz do projeto', () => {
++    expect(projectStore.listFiles('lf', '**/*.tsx').sort()).toEqual(['src/c.tsx', 'src/deep/d.tsx']);
++    expect(projectStore.listFiles('lf', 'src/*.ts')).toEqual(['src/b.ts']);
++    expect(projectStore.listFiles('lf', '*.ts').sort()).toEqual(['a.ts', 'src/b.ts']);
++    expect(globToRegExp('a.b').test('aXb')).toBe(false);
++  });
++});
++
++describe('build_compound_query', () => {
++  it("recusa combine='and' com vários padrões", () => {
++    expect(() => buildCompoundQuery('python', ['functions', 'classes'], 'and')).toThrow();
++  });
++});
++
++describe('ferramentas MCP', () => {
++  it('open_folder importa arquivos e register_project_tool com path escaneia', async () => {
++    const dir = path.join(root, 'proj');
++    fs.mkdirSync(dir);
++    fs.writeFileSync(path.join(dir, 'm.py'), 'def f():\n    return 1\n');
++    const opened = await handleMCPToolCall('open_folder', { path: dir, name: 'mcp-open' });
++    expect(opened.filesCount).toBe(1);
++
++    const reg = await handleMCPToolCall('register_project_tool', { name: 'mcp-reg', path: dir });
++    expect(reg.files).toEqual(['m.py']);
++
++    const empty = await handleMCPToolCall('register_project_tool', { name: 'mcp-empty' });
++    expect(empty.files).toEqual([]);
++    expect(empty.warnings.length).toBeGreaterThan(0);
++  });
++
++  it('open_folder recusa pasta fora das roots', async () => {
++    await expect(handleMCPToolCall('open_folder', { path: '/etc' })).rejects.toThrow();
++  });
++
++  it('safe_replace_node grava no disco quando seguro e reporta persisted', async () => {
++    await initTreeSitter();
++    const dir = path.join(root, 'replace');
++    fs.mkdirSync(dir);
++    const file = path.join(dir, 'm.py');
++    fs.writeFileSync(file, 'x = 1\n');
++    await handleMCPToolCall('open_folder', { path: dir, name: 'mcp-replace' });
++
++    const ok = await handleMCPToolCall('safe_replace_node', {
++      project: 'mcp-replace', file_path: 'm.py', start_byte: 4, end_byte: 5, replacement_text: '2',
++    });
++    expect(ok.success).toBe(true);
++    expect(ok.persisted).toBe(true);
++    expect(fs.readFileSync(file, 'utf-8')).toBe('x = 2\n');
++
++    // Disco divergente do store: não sobrescreve.
++    fs.writeFileSync(file, 'x = 99\n');
++    const diverged = await handleMCPToolCall('safe_replace_node', {
++      project: 'mcp-replace', file_path: 'm.py', start_byte: 4, end_byte: 5, replacement_text: '3',
++    });
++    expect(diverged.persisted).toBe(false);
++    expect(diverged.persistReason).toBe('disk_content_diverged');
++    expect(fs.readFileSync(file, 'utf-8')).toBe('x = 99\n');
++  });
++
++  it('prompts incluem o código e falham para arquivo inexistente', () => {
++    projectStore.createProject('pr', '/projects/pr');
++    projectStore.saveFile('pr', 'a.py', 'print(1)\n');
++    expect(handleMCPPrompt('suggest_improvements', { project: 'pr', file_path: 'a.py' })).toContain('print(1)');
++    expect(() => handleMCPPrompt('code_review', { project: 'pr', file_path: 'nope.py' })).toThrow();
++    expect(() => handleMCPPrompt('explain_code', { project: 'pr', file_path: 'nope.py' })).toThrow();
++  });
++});
++
++describe('TSX usa a gramática tsx (lint não marca tudo como erro)', () => {
++  const hasError = (n: ASTNode): boolean => n.type === 'ERROR' || (n.children ?? []).some(hasError);
++
++  it('detectLanguage devolve tsx para .tsx', () => {
++    expect(detectLanguage('src/BreadcrumbBar.tsx')).toBe('tsx');
++    expect(detectLanguage('a.ts')).toBe('typescript');
++  });
++
++  it('JSX válido não gera nós ERROR', async () => {
++    await initTreeSitter();
++    const src = "interface P { a: string }\nexport function C({ a }: P) {\n  return <div className=\"x\">{a}</div>;\n}\n";
++    const ast = await parseSourceToASTAsync(src, detectLanguage('C.tsx'));
++    expect(hasError(ast)).toBe(false);
++  });
++});
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/__tests__/specification.test.ts b/src/server/__tests__/specification.test.ts
+--- a/src/server/__tests__/specification.test.ts	2026-10-04 07:19:12.000000000 +0000
++++ b/src/server/__tests__/specification.test.ts	2026-10-06 05:41:08.356132443 +0000
+@@ -105,8 +105,10 @@
+       expect(orQuery).toContain('function_definition');
+       expect(orQuery).toContain('class_definition');
+ 
++      // AND com um único padrão equivale ao próprio padrão; com vários, não há semântica AND em Tree-sitter.
+       const andQuery = buildCompoundQuery('python', ['functions'], 'and');
+-      expect(andQuery).toContain('predicate constraint');
++      expect(andQuery).toContain('function_definition');
++      expect(() => buildCompoundQuery('python', ['functions', 'classes'], 'and')).toThrow(/não é suportado/);
+     });
+ 
+     it('adapts queries across language grammars', () => {
+@@ -115,6 +117,14 @@
+       expect(adapted.original_language).toBe('python');
+       expect(adapted.target_language).toBe('javascript');
+       expect(adapted.adapted_query).toContain('function_declaration');
++      expect(adapted.warnings).toEqual([]);
++    });
++
++    it('warns when no node mapping exists for the language pair', () => {
++      const q = '(function_declaration) @f';
++      const adapted = adaptQuery(q, 'typescript', 'rust');
++      expect(adapted.adapted_query).toBe(q);
++      expect(adapted.warnings.length).toBeGreaterThan(0);
+     });
+ 
+     it('provides node type descriptions', () => {
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/app.ts b/src/server/app.ts
+--- a/src/server/app.ts	2026-10-05 03:01:47.000000000 +0000
++++ b/src/server/app.ts	2026-10-06 05:42:15.090696323 +0000
+@@ -2,7 +2,7 @@
+ import cors from 'cors';
+ import { createMcpAuthMiddleware, type McpAuthConfig } from './auth';
+ import { createCorsOptions, type CorsConfig } from './corsConfig';
+-import type { WorkspaceRootsConfig } from './workspaceRoots';
++import { setActiveWorkspaceRoots, type WorkspaceRootsConfig } from './workspaceRoots';
+ import { createProjectsRouter } from './routes/projects';
+ import { createDatabaseRouter } from './routes/database';
+ import { createAnalysisRouter } from './routes/analysis';
+@@ -24,6 +24,7 @@
+  * para que possa ser testado em isolamento. O server.ts cuida de listen/Vite/shutdown.
+  */
+ export function createApp(config: AppConfig): express.Express {
++  setActiveWorkspaceRoots(config.workspaceRoots);
+   const app = express();
+ 
+   app.use(requestContext);
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/complexity.ts b/src/server/complexity.ts
+--- a/src/server/complexity.ts	2026-10-04 07:19:12.000000000 +0000
++++ b/src/server/complexity.ts	2026-10-06 06:06:42.569429753 +0000
+@@ -36,6 +36,8 @@
+   css: { lineComment: [], blockCommentStart: '/*', blockCommentEnd: '*/' },
+   html: { lineComment: [], blockCommentStart: '<!--', blockCommentEnd: '-->' },
+ };
++LANGUAGE_CONFIGS.tsx = LANGUAGE_CONFIGS.typescript;
++LANGUAGE_CONFIGS.jsx = LANGUAGE_CONFIGS.javascript;
+ 
+ /**
+  * Helper to round numbers to a specific number of decimal places.
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/errors.ts b/src/server/errors.ts
+--- a/src/server/errors.ts	2026-10-05 03:00:33.000000000 +0000
++++ b/src/server/errors.ts	2026-10-06 05:39:51.845801932 +0000
+@@ -60,6 +60,20 @@
+   }
+ }
+ 
++/** Conflito de nome/estado de projeto (HTTP 409). */
++export class ProjectConflictError extends MCPTreeSitterError {
++  constructor(message: string, details?: Record<string, any>) {
++    super(message, 409, details);
++  }
++}
++
++/** Falha de upstream (ex.: limite de requisições da API do GitHub); status configurável (403/429/502). */
++export class UpstreamError extends MCPTreeSitterError {
++  constructor(message: string, statusCode: number = 502, details?: Record<string, any>) {
++    super(message, statusCode, details);
++  }
++}
++
+ export class FileAccessError extends MCPTreeSitterError {
+   constructor(message: string, statusCode: number = 404, details?: Record<string, any>) {
+     super(message, statusCode, details);
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/git.ts b/src/server/git.ts
+--- a/src/server/git.ts	2026-10-04 07:19:12.000000000 +0000
++++ b/src/server/git.ts	2026-10-06 05:39:33.922826984 +0000
+@@ -223,7 +223,7 @@
+ export function syncProjectFilesToDisk(
+   projectPath: string,
+   files: Array<{ path: string; content: string }>
+-): { syncedCount: number; targetPath: string } {
++): { syncedCount: number; targetPath: string; skipped: string[] } {
+   const normalizedPath = path.resolve(projectPath);
+ 
+   if (!fs.existsSync(normalizedPath)) {
+@@ -231,8 +231,14 @@
+   }
+ 
+   let syncedCount = 0;
++  const skipped: string[] = [];
+   for (const f of files) {
+-    const fullFilePath = path.join(normalizedPath, f.path);
++    const fullFilePath = path.resolve(normalizedPath, f.path);
++    // Defesa em profundidade: o arquivo precisa ficar dentro do diretório do projeto.
++    if (!fullFilePath.startsWith(normalizedPath + path.sep)) {
++      skipped.push(f.path);
++      continue;
++    }
+     const dir = path.dirname(fullFilePath);
+     if (!fs.existsSync(dir)) {
+       fs.mkdirSync(dir, { recursive: true });
+@@ -241,7 +247,7 @@
+     syncedCount++;
+   }
+ 
+-  return { syncedCount, targetPath: normalizedPath };
++  return { syncedCount, targetPath: normalizedPath, skipped };
+ }
+ 
+ /**
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/github.ts b/src/server/github.ts
+--- a/src/server/github.ts	2026-10-04 07:19:12.000000000 +0000
++++ b/src/server/github.ts	2026-10-06 05:40:36.470527588 +0000
+@@ -1,4 +1,5 @@
+ import { detectLanguage } from './parser';
++import { ProjectError, QueryError, UpstreamError, MCPTreeSitterError } from './errors';
+ 
+ export interface GitHubRepoDetails {
+   owner: string;
+@@ -106,15 +107,18 @@
+ 
+   if (!res.ok) {
+     if (res.status === 404) {
+-      throw new Error(`Repositório '${owner}/${repo}' não encontrado no GitHub. Verifique a URL ou forneça um token caso seja privado.`);
++      throw new ProjectError(`Repositório '${owner}/${repo}' não encontrado no GitHub. Verifique a URL ou forneça um token caso seja privado.`);
+     }
+-    if (res.status === 403) {
+-      const rateLimitMsg = res.headers.get('x-ratelimit-remaining') === '0'
+-        ? 'Limite de requisições da API do GitHub excedido. Forneça um Personal Access Token para continuar.'
+-        : 'Acesso negado pela API do GitHub.';
+-      throw new Error(rateLimitMsg);
++    if (res.status === 403 || res.status === 429) {
++      if (res.status === 429 || res.headers.get('x-ratelimit-remaining') === '0') {
++        throw new UpstreamError(
++          'Limite de requisições da API do GitHub excedido. Forneça um Personal Access Token para continuar.',
++          429
++        );
++      }
++      throw new UpstreamError('Acesso negado pela API do GitHub.', 403);
+     }
+-    throw new Error(`Erro ao consultar GitHub API: HTTP ${res.status}`);
++    throw new UpstreamError(`Erro ao consultar GitHub API: HTTP ${res.status}`, 502);
+   }
+ 
+   const data = await res.json();
+@@ -140,7 +144,7 @@
+ }> {
+   const parsed = parseGitHubRepo(options.repoUrl);
+   if (!parsed) {
+-    throw new Error('URL ou formato de repositório inválido. Utilize "owner/repo" ou "https://github.com/owner/repo".');
++    throw new QueryError('URL ou formato de repositório inválido. Utilize "owner/repo" ou "https://github.com/owner/repo".');
+   }
+ 
+   const details = await fetchGitHubRepoDetails(parsed.owner, parsed.repo, options.token);
+@@ -159,7 +163,10 @@
+   const treeRes = await fetch(treeUrl, { headers });
+ 
+   if (!treeRes.ok) {
+-    throw new Error(`Não foi possível obter a árvore de arquivos para a branch '${targetBranch}'. Verifique se o branch existe.`);
++    if (treeRes.status === 403 || treeRes.status === 429) {
++      throw new UpstreamError('Limite de requisições da API do GitHub excedido. Forneça um Personal Access Token para continuar.', 429);
++    }
++    throw new ProjectError(`Não foi possível obter a árvore de arquivos para a branch '${targetBranch}'. Verifique se o branch existe.`);
+   }
+ 
+   const treeData = await treeRes.json();
+@@ -193,7 +200,7 @@
+ 
+   const total = targetFiles.length;
+   if (total === 0) {
+-    throw new Error('Nenhum arquivo de código suportado foi encontrado no repositório com os filtros informados.');
++    throw new MCPTreeSitterError('Nenhum arquivo de código suportado foi encontrado no repositório com os filtros informados.', 422);
+   }
+ 
+   const concurrency = Math.min(Math.max(1, options.concurrency || 12), 30);
+@@ -294,7 +301,7 @@
+   }
+ 
+   if (!repoDetails || allFiles.length === 0) {
+-    throw new Error('Nenhum arquivo de código foi importado do repositório.');
++    throw new MCPTreeSitterError('Nenhum arquivo de código foi importado do repositório.', 422);
+   }
+ 
+   return {
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/mcp.ts b/src/server/mcp.ts
+--- a/src/server/mcp.ts	2026-10-06 04:46:13.000000000 +0000
++++ b/src/server/mcp.ts	2026-10-06 05:42:15.104864114 +0000
+@@ -33,6 +33,39 @@
+   analyzeFunctionComplexity,
+ } from './operations';
+ import { adaptQuery, buildCompoundQuery, getTemplate, describeNodeTypes } from './queryBuilder';
++import fs from 'fs';
++import path from 'path';
++import { scanDirectoryIntoProject } from './scanDirectory';
++import { getActiveWorkspaceRoots, validateWritableProjectPath } from './workspaceRoots';
++
++/**
++ * Grava no disco o resultado de um safe_replace_node, se (e somente se) for seguro:
++ * projeto dentro das roots, arquivo já existente no disco, dentro do projeto, e sem divergência
++ * entre o disco e o conteúdo que o store tinha antes da edição.
++ */
++function persistReplacedFile(
++  projectPath: string,
++  filePath: string,
++  previousContent: string,
++  newContent: string
++): { persisted: boolean; reason?: string } {
++  const root = validateWritableProjectPath(projectPath, getActiveWorkspaceRoots());
++  if (root.ok === false) return { persisted: false, reason: 'project_outside_workspace_roots' };
++  const target = path.resolve(root.resolvedPath, filePath);
++  if (!target.startsWith(root.resolvedPath + path.sep)) return { persisted: false, reason: 'file_outside_project' };
++  try {
++    const real = fs.realpathSync(target);
++    const realRoot = fs.realpathSync(root.resolvedPath);
++    if (!real.startsWith(realRoot + path.sep)) return { persisted: false, reason: 'file_outside_project' };
++    if (fs.readFileSync(real, 'utf-8') !== previousContent) {
++      return { persisted: false, reason: 'disk_content_diverged' };
++    }
++    fs.writeFileSync(real, newContent, 'utf-8');
++    return { persisted: true };
++  } catch {
++    return { persisted: false, reason: 'file_not_on_disk' };
++  }
++}
+ 
+ export const MCP_TOOLS_METADATA = [
+   {
+@@ -99,6 +132,7 @@
+         start_byte: { type: 'number', description: 'Start byte index' },
+         end_byte: { type: 'number', description: 'End byte index' },
+         replacement_text: { type: 'string', description: 'Replacement code' },
++        write_to_disk: { type: 'boolean', description: 'Also write the edit to the file on disk when safe (default true). The response reports `persisted`.' },
+       },
+       required: ['project', 'file_path', 'start_byte', 'end_byte', 'replacement_text'],
+     },
+@@ -192,7 +226,7 @@
+       properties: {
+         project: { type: 'string', description: 'Project name' },
+         pattern: { type: 'string', description: 'Search pattern or regular expression' },
+-        file_pattern: { type: 'string', description: 'Glob pattern' },
++        file_pattern: { type: 'string', description: 'Glob relative to the project root (e.g. "**/*.tsx", "src/*.ts"); a pattern without "/" matches file names at any depth' },
+         max_results: { type: 'number', description: 'Max results limit' },
+         case_sensitive: { type: 'boolean', description: 'Case sensitive matching' },
+         whole_word: { type: 'boolean', description: 'Match whole words only' },
+@@ -217,7 +251,7 @@
+   },
+   {
+     name: 'build_compound_query',
+-    description: 'Combine multiple query templates or patterns with OR or AND semantics.',
++    description: "Combine multiple query templates or patterns into one query. Only combine='or' (default) is supported for several patterns; Tree-sitter has no top-level AND.",
+     inputSchema: {
+       type: 'object',
+       properties: {
+@@ -277,7 +311,7 @@
+       properties: {
+         project: { type: 'string', description: 'Project name' },
+         pattern: { type: 'string', description: 'Glob pattern' },
+-        extensions: { type: 'array', items: { type: 'string' } },
++        extensions: { type: 'array', items: { type: 'string' }, description: 'Extensions with or without dot, e.g. ["ts", ".tsx"]' },
+       },
+       required: ['project'],
+     },
+@@ -318,18 +352,32 @@
+   },
+   {
+     name: 'register_project_tool',
+-    description: 'Register a new project in the workspace.',
++    description: 'Register a new project in the workspace. If `path` is an existing directory inside the allowed workspace roots, its source files are imported (set scan=false to register an empty project).',
+     inputSchema: {
+       type: 'object',
+       properties: {
+         name: { type: 'string', description: 'Project name' },
+         path: { type: 'string', description: 'Root path of the project' },
+         description: { type: 'string', description: 'Project description' },
++        scan: { type: 'boolean', description: 'Import files from `path` when it is an allowed directory (default true)' },
+       },
+       required: ['name'],
+     },
+   },
+   {
++    name: 'open_folder',
++    description: 'Open a folder from the host filesystem (must be inside the allowed workspace roots) as a project, importing its source files.',
++    inputSchema: {
++      type: 'object',
++      properties: {
++        path: { type: 'string', description: 'Absolute or cwd-relative directory path' },
++        name: { type: 'string', description: 'Optional project name (defaults to the folder name)' },
++        max_files: { type: 'number', description: 'Maximum number of files to import (default 150)' },
++      },
++      required: ['path'],
++    },
++  },
++  {
+     name: 'get_node_types',
+     description: 'Get common AST node type descriptions for a language.',
+     inputSchema: {
+@@ -394,14 +442,45 @@
+     }
+ 
+     case 'register_project_tool': {
+-      const proj = projectStore.createProject(args.name || 'unnamed', args.path, args.description);
++      const projName = args.name || 'unnamed';
++      const warnings: string[] = [];
++      if (typeof args.path === 'string' && args.path !== '' && args.scan !== false) {
++        try {
++          const scanned = scanDirectoryIntoProject(getActiveWorkspaceRoots(), {
++            path: args.path,
++            name: projName,
++          });
++          const proj = projectStore.getProject(scanned.project)!;
++          if (args.description) proj.description = args.description;
++          return {
++            name: proj.name,
++            path: proj.path,
++            files: Array.from(proj.files.keys()),
++            warnings,
++          };
++        } catch (err) {
++          warnings.push(`Pasta não importada: ${err instanceof Error ? err.message : String(err)}`);
++        }
++      } else if (!args.path) {
++        warnings.push('Projeto registrado sem arquivos: nenhum path informado. Use open_folder ou salve arquivos manualmente.');
++      }
++      const proj = projectStore.createProject(projName, args.path, args.description);
+       return {
+         name: proj.name,
+         path: proj.path,
+         files: Array.from(proj.files.keys()),
++        warnings,
+       };
+     }
+ 
++    case 'open_folder': {
++      return scanDirectoryIntoProject(getActiveWorkspaceRoots(), {
++        path: args.path,
++        name: args.name,
++        maxFiles: args.max_files !== undefined ? Number(args.max_files) : undefined,
++      });
++    }
++
+     case 'list_files': {
+       return projectStore.listFiles(args.project, args.pattern, args.extensions);
+     }
+@@ -480,15 +559,29 @@
+     case 'safe_replace_node': {
+       const proj = projectStore.getProject(args.project);
+       if (!proj) throw new Error(`Project '${args.project}' not found`);
+-      return await safeReplaceNode(
++      const targetFile = args.file_path || args.path;
++      const previousContent = proj.files.get(targetFile)?.content;
++      const replaceResult = await safeReplaceNode(
+         proj,
+-        args.file_path || args.path,
++        targetFile,
+         Number(args.start_byte),
+         Number(args.end_byte),
+         args.replacement_text,
+         languageRegistry,
+         { isByteOffset: args.is_byte_offset === true }
+       );
++      if (!replaceResult.success || previousContent === undefined) {
++        return { ...replaceResult, persisted: false };
++      }
++      if (args.write_to_disk === false) {
++        return { ...replaceResult, persisted: false, persistReason: 'write_to_disk_disabled' };
++      }
++      const persisted = persistReplacedFile(proj.path, targetFile, previousContent, replaceResult.newContent);
++      return {
++        ...replaceResult,
++        persisted: persisted.persisted,
++        ...(persisted.reason ? { persistReason: persisted.reason } : {}),
++      };
+     }
+ 
+     case 'analyze_function_complexity': {
+@@ -703,24 +796,30 @@
+   }
+ }
+ 
++function requirePromptFile(args: Record<string, any>) {
++  const f = projectStore.getFile(args.project, args.file_path);
++  if (!f) throw new Error(`File ${args.file_path} not found in project ${args.project}`);
++  return f;
++}
++
+ export function handleMCPPrompt(name: string, args: Record<string, any>): string {
+   switch (name) {
+     case 'code_review': {
+-      const f = projectStore.getFile(args.project, args.file_path);
+-      const code = f?.content || '';
++      const f = requirePromptFile(args);
++      const code = f.content;
+       return `Please review this ${f?.language || 'code'} file:\n\n\`\`\`\n${code}\n\`\`\`\nFocus on clarity, potential bugs, performance, and best practices.`;
+     }
+     case 'explain_code': {
+-      const f = projectStore.getFile(args.project, args.file_path);
+-      const code = f?.content || '';
++      const f = requirePromptFile(args);
++      const code = f.content;
+       return `Please explain this ${f?.language || 'code'} file:\n\n\`\`\`\n${code}\n\`\`\`\nExplain what it does, how it is structured, and any key patterns.`;
+     }
+     case 'explain_tree_sitter_query': {
+       return `Tree-sitter queries use S-expression syntax to match patterns in code.\n\nBasic query syntax:\n- (node_type) - Match nodes of a specific type\n- (node_type field: (child_type)) - Match nodes with specific field relationships\n- @name - Capture a node with a name\n- #predicate - Apply additional constraints`;
+     }
+     case 'suggest_improvements': {
+-      const f = projectStore.getFile(args.project, args.file_path);
+-      return `Please suggest improvements for ${args.file_path} focusing on modularity, error handling, and performance.`;
++      const f = requirePromptFile(args);
++      return `Please suggest improvements for ${args.file_path} (${f.language}) focusing on modularity, error handling, and performance:\n\n\`\`\`\n${f.content}\n\`\`\``;
+     }
+     case 'project_overview': {
+       const proj = projectStore.getProject(args.project);
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/parser.ts b/src/server/parser.ts
+--- a/src/server/parser.ts	2026-10-04 07:41:11.000000000 +0000
++++ b/src/server/parser.ts	2026-10-06 06:06:42.568908027 +0000
+@@ -35,7 +35,7 @@
+   cjs: 'javascript',
+   jsx: 'javascript',
+   ts: 'typescript',
+-  tsx: 'typescript',
++  tsx: 'tsx',
+   mts: 'typescript',
+   cts: 'typescript',
+   go: 'go',
+@@ -324,7 +324,7 @@
+ 
+   if (language === 'python') {
+     rootNode = parsePython(source, lines, rootStart, rootEnd, makeNode);
+-  } else if (language === 'javascript' || language === 'typescript') {
++  } else if (language === 'javascript' || language === 'typescript' || language === 'tsx') {
+     rootNode = parseJsTs(source, lines, language, rootStart, rootEnd, makeNode);
+   } else if (language === 'go') {
+     rootNode = parseGo(source, lines, rootStart, rootEnd, makeNode);
+@@ -785,7 +785,7 @@
+ 
+     // Interface Declaration
+     const ifMatch = /((?:export\s+)?interface\s+)([a-zA-Z_$][\w$]*)/.exec(line);
+-    if (language === 'typescript' && ifMatch) {
++    if ((language === 'typescript' || language === 'tsx') && ifMatch) {
+       const ifName = ifMatch[2];
+       const blockEnd = findBlockEnd(lines, i) || { row: i, column: line.length };
+       const nameCol = ifMatch.index + ifMatch[1].length;
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/queryBuilder.ts b/src/server/queryBuilder.ts
+--- a/src/server/queryBuilder.ts	2026-10-04 07:19:12.000000000 +0000
++++ b/src/server/queryBuilder.ts	2026-10-06 05:41:08.355697964 +0000
+@@ -4,12 +4,15 @@
+  */
+ 
+ import { TEMPLATES, COMMON_NODE_DESCRIPTIONS } from './templates';
++import { QueryError } from './errors';
+ 
+ export interface AdaptedQueryResult {
+   original_language: string;
+   target_language: string;
+   original_query: string;
+   adapted_query: string;
++  /** Avisos sobre a adaptação (ex.: não há mapeamento para o par de linguagens). */
++  warnings: string[];
+ }
+ 
+ /**
+@@ -104,16 +107,21 @@
+ ): string {
+   const resolved = patterns.map((p) => getTemplate(language, p).trim());
+ 
+-  if (combine === 'or') {
+-    // Tree-sitter supports multiple patterns separated by newlines as OR
+-    return resolved.join('\n\n');
+-  } else {
+-    // AND combination with documentation note
+-    return (
+-      `;; Compound query (AND semantics via predicate constraint)\n` +
+-      resolved.join('\n\n')
+-    );
++  if (combine === 'and') {
++    // Tree-sitter não tem AND entre padrões de topo: cada padrão casa de forma independente
++    // (o resultado seria sempre a união). Em vez de fingir semântica AND, recusamos.
++    if (resolved.length > 1) {
++      throw new QueryError(
++        "combine='and' não é suportado: queries Tree-sitter não combinam padrões de topo com AND. " +
++          "Use combine='or' ou aninhe as condições em um único padrão S-expression (com predicados #eq?/#match?).",
++        { combine, patterns: patterns.length }
++      );
++    }
++    return resolved[0] ?? '';
+   }
++
++  // Tree-sitter trata vários padrões separados por linha em branco como OR.
++  return resolved.join('\n\n');
+ }
+ 
+ /**
+@@ -129,8 +137,17 @@
+   const mapKey = `${fromNorm}->${toNorm}`;
+ 
+   let adapted = query;
++  const warnings: string[] = [];
+   const translationMap = LANGUAGE_NODE_MAPS[mapKey];
+ 
++  if (fromNorm === toNorm) {
++    warnings.push(`Linguagem de origem e destino são iguais ('${fromLanguage}'); a query não foi alterada.`);
++  } else if (!translationMap) {
++    warnings.push(
++      `Não há mapeamento de nós de '${fromLanguage}' para '${toLanguage}'; a query foi devolvida sem alterações.`
++    );
++  }
++
+   if (translationMap) {
+     for (const [sourceNode, targetNode] of Object.entries(translationMap)) {
+       // Replace node name taking parentheses into account
+@@ -139,11 +156,16 @@
+     }
+   }
+ 
++  if (translationMap && adapted === query) {
++    warnings.push('Nenhum tipo de nó da query possui equivalente mapeado; a query não foi alterada.');
++  }
++
+   return {
+     original_language: fromLanguage,
+     target_language: toLanguage,
+     original_query: query,
+     adapted_query: adapted,
++    warnings,
+   };
+ }
+ 
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/routes/projects.ts b/src/server/routes/projects.ts
+--- a/src/server/routes/projects.ts	2026-10-05 00:35:28.000000000 +0000
++++ b/src/server/routes/projects.ts	2026-10-06 05:45:02.550972596 +0000
+@@ -1,6 +1,6 @@
+ import { sendRouteError } from '../httpErrors';
+ import { QuotaExceededError } from '../errors';
+-import { Router } from 'express';
++import { Router, type Request, type Response } from 'express';
+ import fs from 'fs';
+ import path from 'path';
+ import { projectStore } from '../store';
+@@ -8,12 +8,36 @@
+ 
+ import { getProjectGitStatus, initProjectGitRepo, stageGitFiles, unstageGitFiles, commitGitChanges, switchGitBranch, syncProjectFilesToDisk } from '../git';
+ import { importGitHubRepository, parseGitHubRepo } from '../github';
+-import { validateScanDirectoryPath } from '../workspaceRoots';
++import { validateScanDirectoryPath, validateWritableProjectPath } from '../workspaceRoots';
+ import type { WorkspaceRootsConfig } from '../workspaceRoots';
++import { scanDirectoryIntoProject } from '../scanDirectory';
+ 
+ export function createProjectsRouter(options: { workspaceRoots: WorkspaceRootsConfig }): Router {
+   const router = Router();
+ 
++  /** Valida um path vindo do cliente (criação/edição). Responde 4xx e devolve false se inválido. */
++  function acceptClientPath(res: Response, clientPath: unknown): boolean {
++    if (clientPath === undefined || clientPath === null || clientPath === '') return true;
++    const v = validateWritableProjectPath(clientPath, options.workspaceRoots);
++    if (v.ok === false) {
++      const failure = v as Extract<typeof v, { ok: false }>;
++      res.status(failure.status).json({ error: failure.error });
++      return false;
++    }
++    return true;
++  }
++
++  /** Revalida proj.path antes de qualquer escrita em disco (git-sync/init/stage/commit/branch). */
++  function writableProjectPath(res: Response, projPath: string): string | null {
++    const v = validateWritableProjectPath(projPath, options.workspaceRoots);
++    if (v.ok === false) {
++      const failure = v as Extract<typeof v, { ok: false }>;
++      res.status(failure.status).json({ error: failure.error });
++      return null;
++    }
++    return v.resolvedPath;
++  }
++
+   // Projects API
+   router.get('/api/projects', (req, res) => {
+     res.json(projectStore.listProjects());
+@@ -49,11 +73,13 @@
+   router.post('/api/projects/:name/git-init', (req, res) => {
+     const proj = projectStore.getProject(req.params.name);
+     if (!proj) return res.status(404).json({ error: 'Project not found' });
++    const safePath = writableProjectPath(res, proj.path);
++    if (!safePath) return;
+     try {
+       // Sync files to disk first so git tracks them
+       const files = Array.from(proj.files.values()).map((f) => ({ path: f.path, content: f.content }));
+-      syncProjectFilesToDisk(proj.path, files);
+-      const status = initProjectGitRepo(proj.path);
++      syncProjectFilesToDisk(safePath, files);
++      const status = initProjectGitRepo(safePath);
+       res.json(status);
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -64,10 +90,12 @@
+   router.post('/api/projects/:name/git-sync', (req, res) => {
+     const proj = projectStore.getProject(req.params.name);
+     if (!proj) return res.status(404).json({ error: 'Project not found' });
++    const safePath = writableProjectPath(res, proj.path);
++    if (!safePath) return;
+     try {
+       const files = Array.from(proj.files.values()).map((f) => ({ path: f.path, content: f.content }));
+-      const result = syncProjectFilesToDisk(proj.path, files);
+-      const status = getProjectGitStatus(proj.path);
++      const result = syncProjectFilesToDisk(safePath, files);
++      const status = getProjectGitStatus(safePath);
+       res.json({ ...result, gitStatus: status });
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -78,9 +106,11 @@
+   router.post('/api/projects/:name/git-stage', (req, res) => {
+     const proj = projectStore.getProject(req.params.name);
+     if (!proj) return res.status(404).json({ error: 'Project not found' });
++    const safePath = writableProjectPath(res, proj.path);
++    if (!safePath) return;
+     try {
+       const { files } = req.body;
+-      const status = stageGitFiles(proj.path, files);
++      const status = stageGitFiles(safePath, files);
+       res.json(status);
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -91,9 +121,11 @@
+   router.post('/api/projects/:name/git-unstage', (req, res) => {
+     const proj = projectStore.getProject(req.params.name);
+     if (!proj) return res.status(404).json({ error: 'Project not found' });
++    const safePath = writableProjectPath(res, proj.path);
++    if (!safePath) return;
+     try {
+       const { files } = req.body;
+-      const status = unstageGitFiles(proj.path, files);
++      const status = unstageGitFiles(safePath, files);
+       res.json(status);
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -104,10 +136,12 @@
+   router.post('/api/projects/:name/git-commit', (req, res) => {
+     const proj = projectStore.getProject(req.params.name);
+     if (!proj) return res.status(404).json({ error: 'Project not found' });
++    const safePath = writableProjectPath(res, proj.path);
++    if (!safePath) return;
+     try {
+       const { message } = req.body;
+       if (!message) return res.status(400).json({ error: 'Mensagem de commit é obrigatória.' });
+-      const status = commitGitChanges(proj.path, message);
++      const status = commitGitChanges(safePath, message);
+       res.json(status);
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -118,10 +152,12 @@
+   router.post('/api/projects/:name/git-branch', (req, res) => {
+     const proj = projectStore.getProject(req.params.name);
+     if (!proj) return res.status(404).json({ error: 'Project not found' });
++    const safePath = writableProjectPath(res, proj.path);
++    if (!safePath) return;
+     try {
+       const { branch, create } = req.body;
+       if (!branch) return res.status(400).json({ error: 'Nome da branch é obrigatório.' });
+-      const status = switchGitBranch(proj.path, branch, Boolean(create));
++      const status = switchGitBranch(safePath, branch, Boolean(create));
+       res.json(status);
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -156,6 +192,7 @@
+   router.post('/api/projects', (req, res) => {
+     const { name, path, description } = req.body;
+     if (!name) return res.status(400).json({ error: 'Project name is required' });
++    if (!acceptClientPath(res, path)) return;
+     const proj = projectStore.createProject(name, path, description);
+     res.json({ status: 'created', project: proj.name, path: proj.path });
+   });
+@@ -169,19 +206,23 @@
+         return res.status(400).json({ error: 'files must be a non-empty array' });
+       }
+ 
++      if (!acceptClientPath(res, dirPath)) return;
+       const finalPath = dirPath || `/workspace/${name.toLowerCase().replace(/[^a-z0-9_-]/g, '-')}`;
+       const proj = projectStore.createProject(name, finalPath, description || `Imported project ${name}`);
+ 
+       const detectedLangs = new Set<string>();
++      const skipped: Array<{ path: string; reason: string }> = [];
+       for (const f of files) {
+-        if (f.path && typeof f.content === 'string') {
++        if (f && f.path && typeof f.content === 'string') {
+           try {
+             const saved = projectStore.saveFile(proj.name, f.path, f.content);
+             detectedLangs.add(saved.language);
+           } catch (err) {
+             if (err instanceof QuotaExceededError) throw err;
+-            // skip if path violates isolation
++            skipped.push({ path: String(f.path), reason: 'path_rejected_by_isolation' });
+           }
++        } else {
++          skipped.push({ path: String(f?.path ?? ''), reason: 'invalid_entry' });
+         }
+       }
+ 
+@@ -191,6 +232,7 @@
+         path: proj.path,
+         filesCount: proj.files.size,
+         detectedLanguages: Array.from(detectedLangs),
++        skipped,
+       });
+     } catch (err) {
+       return sendRouteError(req, res, err);
+@@ -200,129 +242,16 @@
+   // Scan Local Directory on Host System
+   router.post('/api/scan-directory', (req, res) => {
+     try {
+-      const { path: dirPath, name: customName, maxFiles = 150 } = req.body;
++      const { path: dirPath, name: customName, maxFiles } = req.body;
+       if (!dirPath) {
+         return res.status(400).json({ error: 'Directory path is required' });
+       }
+-
+-      const validation = validateScanDirectoryPath(dirPath, options.workspaceRoots);
+-      if (validation.ok === false) {
+-        const failure = validation as Extract<typeof validation, { ok: false }>;
+-        return res.status(failure.status).json({ error: failure.error });
+-      }
+-      const normalizedPath = validation.resolvedPath;
+-
+-      const baseName = path.basename(normalizedPath) || 'scanned-project';
+-      const projectName = (customName || baseName).toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+-
+-      const IGNORE_DIRS = new Set([
+-        'node_modules',
+-        '.git',
+-        '.next',
+-        'dist',
+-        'build',
+-        '.venv',
+-        'venv',
+-        '__pycache__',
+-        '.turbo',
+-        '.cache',
+-        '.idea',
+-        '.vscode',
+-        '.ssh',
+-        '.aws',
+-        'coverage',
+-      ]);
+-
+-      const ALLOWED_EXTS = new Set([
+-        '.py', '.ts', '.tsx', '.js', '.jsx', '.go', '.rs', '.java',
+-        '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.swift',
+-        '.json', '.yaml', '.yml', '.toml', '.md', '.sql', '.html', '.css'
+-      ]);
+-
+-      const discoveredFiles: Array<{ relativePath: string; absolutePath: string; size: number }> = [];
+-
+-      function walk(currentDir: string) {
+-        if (discoveredFiles.length >= maxFiles) return;
+-        let entries: fs.Dirent[] = [];
+-        try {
+-          entries = fs.readdirSync(currentDir, { withFileTypes: true });
+-        } catch {
+-          return;
+-        }
+-
+-        for (const entry of entries) {
+-          if (discoveredFiles.length >= maxFiles) break;
+-          const fullPath = path.join(currentDir, entry.name);
+-
+-          if (entry.isDirectory()) {
+-            if (!IGNORE_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
+-              walk(fullPath);
+-            }
+-          } else if (entry.isFile()) {
+-            // Protect against reading secret/credential files
+-            if (
+-              entry.name.startsWith('.env') ||
+-              entry.name.includes('credential') ||
+-              entry.name.includes('id_rsa') ||
+-              entry.name.endsWith('.pem')
+-            ) {
+-              continue;
+-            }
+-            const ext = path.extname(entry.name).toLowerCase();
+-            if (ALLOWED_EXTS.has(ext)) {
+-              const rel = path.relative(normalizedPath, fullPath).replace(/\\/g, '/');
+-              try {
+-                const fileStat = fs.statSync(fullPath);
+-                if (fileStat.size <= 1024 * 1024) {
+-                  discoveredFiles.push({
+-                    relativePath: rel,
+-                    absolutePath: fullPath,
+-                    size: fileStat.size,
+-                  });
+-                }
+-              } catch {
+-                // skip
+-              }
+-            }
+-          }
+-        }
+-      }
+-
+-      walk(normalizedPath);
+-
+-      if (discoveredFiles.length === 0) {
+-        return res.status(400).json({
+-          error: `No supported source code files found in directory: ${normalizedPath}`,
+-        });
+-      }
+-
+-      // Create isolated project
+-      const proj = projectStore.createProject(
+-        projectName,
+-        normalizedPath,
+-        `Project scanned from ${normalizedPath} (${discoveredFiles.length} files)`
+-      );
+-
+-      // Save files into the isolated project
+-      const detectedLangs = new Set<string>();
+-      for (const item of discoveredFiles) {
+-        try {
+-          const content = fs.readFileSync(item.absolutePath, 'utf-8');
+-          const saved = projectStore.saveFile(proj.name, item.relativePath, content);
+-          detectedLangs.add(saved.language);
+-        } catch (err) {
+-          if (err instanceof QuotaExceededError) throw err;
+-          // ignore unreadable files
+-        }
+-      }
+-
+-      res.json({
+-        status: 'scanned',
+-        project: proj.name,
+-        path: proj.path,
+-        filesCount: proj.files.size,
+-        detectedLanguages: Array.from(detectedLangs),
++      const result = scanDirectoryIntoProject(options.workspaceRoots, {
++        path: dirPath,
++        name: customName,
++        maxFiles,
+       });
++      res.json({ status: 'scanned', ...result });
+     } catch (err) {
+       return sendRouteError(req, res, err);
+     }
+@@ -418,6 +347,7 @@
+   router.put('/api/projects/:name', (req, res) => {
+     try {
+       const { name, path: projPath, description } = req.body;
++      if (!acceptClientPath(res, projPath)) return;
+       const updated = projectStore.updateProject(req.params.name, {
+         name,
+         path: projPath,
+@@ -437,6 +367,7 @@
+   router.patch('/api/projects/:name', (req, res) => {
+     try {
+       const { name, path: projPath, description } = req.body;
++      if (!acceptClientPath(res, projPath)) return;
+       const updated = projectStore.updateProject(req.params.name, {
+         name,
+         path: projPath,
+@@ -460,6 +391,7 @@
+       if (!targetName) {
+         return res.status(400).json({ error: 'O nome do novo projeto (targetName) é obrigatório.' });
+       }
++      if (!acceptClientPath(res, targetPath)) return;
+       const cloned = projectStore.cloneProject(
+         req.params.name,
+         targetName,
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/scanDirectory.ts b/src/server/scanDirectory.ts
+--- a/src/server/scanDirectory.ts	1970-01-01 00:00:00.000000000 +0000
++++ b/src/server/scanDirectory.ts	2026-10-06 05:41:47.923828544 +0000
+@@ -0,0 +1,117 @@
++/**
++ * Escaneamento de diretórios do host para dentro do store, compartilhado entre
++ * POST /api/scan-directory e as ferramentas MCP (open_folder / register_project_tool).
++ * Sempre passa por validateScanDirectoryPath (roots + symlinks).
++ */
++import fs from 'fs';
++import path from 'path';
++import { projectStore } from './store';
++import { QuotaExceededError, SecurityError, FileAccessError, MCPTreeSitterError } from './errors';
++import { validateScanDirectoryPath, type WorkspaceRootsConfig } from './workspaceRoots';
++
++const IGNORE_DIRS = new Set([
++  'node_modules', '.git', '.next', 'dist', 'build', '.venv', 'venv', '__pycache__',
++  '.turbo', '.cache', '.idea', '.vscode', '.ssh', '.aws', 'coverage',
++]);
++
++const ALLOWED_EXTS = new Set([
++  '.py', '.ts', '.tsx', '.js', '.jsx', '.go', '.rs', '.java',
++  '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.swift',
++  '.json', '.yaml', '.yml', '.toml', '.md', '.sql', '.html', '.css',
++]);
++
++const MAX_FILE_BYTES = 1024 * 1024;
++
++export interface ScanResult {
++  project: string;
++  path: string;
++  filesCount: number;
++  detectedLanguages: string[];
++}
++
++/** Valida o diretório contra as roots e importa os arquivos suportados em um projeto novo. */
++export function scanDirectoryIntoProject(
++  config: WorkspaceRootsConfig,
++  opts: { path: unknown; name?: string; maxFiles?: number }
++): ScanResult {
++  const validation = validateScanDirectoryPath(opts.path, config);
++  if (validation.ok === false) {
++    const failure = validation as Extract<typeof validation, { ok: false }>;
++    if (failure.status === 403) throw new SecurityError(failure.error);
++    if (failure.status === 404) throw new FileAccessError(failure.error, 404);
++    throw new MCPTreeSitterError(failure.error, failure.status);
++  }
++  const root = validation.resolvedPath;
++  const maxFiles = typeof opts.maxFiles === 'number' && opts.maxFiles > 0 ? opts.maxFiles : 150;
++
++  const projectName = (opts.name || path.basename(root) || 'scanned-project')
++    .toLowerCase()
++    .replace(/[^a-z0-9_-]/g, '-');
++
++  const discovered: Array<{ relativePath: string; absolutePath: string }> = [];
++
++  const walk = (dir: string): void => {
++    if (discovered.length >= maxFiles) return;
++    let entries: fs.Dirent[];
++    try {
++      entries = fs.readdirSync(dir, { withFileTypes: true });
++    } catch {
++      return;
++    }
++    for (const entry of entries) {
++      if (discovered.length >= maxFiles) break;
++      const full = path.join(dir, entry.name);
++      if (entry.isDirectory()) {
++        if (!IGNORE_DIRS.has(entry.name) && !entry.name.startsWith('.')) walk(full);
++      } else if (entry.isFile()) {
++        if (
++          entry.name.startsWith('.env') ||
++          entry.name.includes('credential') ||
++          entry.name.includes('id_rsa') ||
++          entry.name.endsWith('.pem')
++        ) {
++          continue;
++        }
++        if (!ALLOWED_EXTS.has(path.extname(entry.name).toLowerCase())) continue;
++        try {
++          if (fs.statSync(full).size <= MAX_FILE_BYTES) {
++            discovered.push({
++              relativePath: path.relative(root, full).replace(/\\/g, '/'),
++              absolutePath: full,
++            });
++          }
++        } catch {
++          // ignora arquivos ilegíveis
++        }
++      }
++    }
++  };
++  walk(root);
++
++  if (discovered.length === 0) {
++    throw new MCPTreeSitterError('No supported source code files found in the directory', 400);
++  }
++
++  const proj = projectStore.createProject(
++    projectName,
++    root,
++    `Project scanned from ${root} (${discovered.length} files)`
++  );
++
++  const langs = new Set<string>();
++  for (const item of discovered) {
++    try {
++      const saved = projectStore.saveFile(proj.name, item.relativePath, fs.readFileSync(item.absolutePath, 'utf-8'));
++      langs.add(saved.language);
++    } catch (err) {
++      if (err instanceof QuotaExceededError) throw err;
++    }
++  }
++
++  return {
++    project: proj.name,
++    path: proj.path,
++    filesCount: proj.files.size,
++    detectedLanguages: Array.from(langs),
++  };
++}
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/store.ts b/src/server/store.ts
+--- a/src/server/store.ts	2026-10-06 04:44:39.000000000 +0000
++++ b/src/server/store.ts	2026-10-06 06:06:42.569771686 +0000
+@@ -5,7 +5,7 @@
+ import { validateAndResolvePath, normalizePath, auditProjectIsolation } from './isolation';
+ import { sqliteStorage } from './db';
+ import { logger, serializeError } from './logger';
+-import { QuotaExceededError } from './errors';
++import { QuotaExceededError, ProjectError, ProjectConflictError } from './errors';
+ 
+ const projects = new Map<string, Project>();
+ 
+@@ -108,6 +108,11 @@
+     const loaded = sqliteStorage.loadAllProjects();
+     if (loaded) {
+       for (const [name, p] of loaded) {
++        // Projetos persistidos antes da correção do TSX guardavam '.tsx' como 'typescript'.
++        for (const f of p.files.values()) {
++          const detected = detectLanguage(f.path, f.language);
++          if (detected !== f.language) f.language = detected;
++        }
+         projects.set(name, p);
+       }
+     }
+@@ -118,6 +123,39 @@
+ 
+ initStore();
+ 
++/**
++ * Converte um glob em RegExp ancorada (caminhos relativos à raiz do projeto, separador '/').
++ *  - `**` casa qualquer profundidade (inclusive zero diretórios em `**\/x`);
++ *  - `*` casa dentro de um segmento; `?` casa um caractere;
++ *  - sem '/' no padrão, casa pelo nome do arquivo em qualquer profundidade (como no .gitignore).
++ */
++export function globToRegExp(pattern: string): RegExp {
++  const glob = pattern.trim().replace(/^\.\//, '').replace(/\\/g, '/');
++  let re = '';
++  for (let i = 0; i < glob.length; i++) {
++    const c = glob[i];
++    if (c === '*') {
++      if (glob[i + 1] === '*') {
++        i++;
++        if (glob[i + 1] === '/') {
++          i++;
++          re += '(?:.*/)?';
++        } else {
++          re += '.*';
++        }
++      } else {
++        re += '[^/]*';
++      }
++    } else if (c === '?') {
++      re += '[^/]';
++    } else {
++      re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
++    }
++  }
++  const prefix = glob.includes('/') ? '' : '(?:.*/)?';
++  return new RegExp(`^${prefix}${re}$`);
++}
++
+ export const projectStore = {
+   listProjects(): Array<{ name: string; path: string; description?: string; fileCount: number }> {
+     return Array.from(projects.values()).map((p) => ({
+@@ -276,10 +314,13 @@
+   ): Project {
+     const proj = projects.get(oldName);
+     if (!proj) {
+-      throw new Error(`Projeto '${oldName}' não encontrado.`);
++      throw new ProjectError(`Projeto '${oldName}' não encontrado.`);
+     }
+ 
+     const newName = updates.name ? updates.name.trim() : proj.name;
++    if (newName !== oldName && projects.has(newName)) {
++      throw new ProjectConflictError(`Já existe um projeto com o nome '${newName}'.`);
++    }
+     const newPath = updates.path ? normalizePath(updates.path.trim()) : proj.path;
+     const newDesc = updates.description !== undefined ? updates.description : (proj.description || '');
+ 
+@@ -313,11 +354,11 @@
+   ): Project {
+     const sourceProj = projects.get(sourceName);
+     if (!sourceProj) {
+-      throw new Error(`Projeto '${sourceName}' não encontrado para clonagem.`);
++      throw new ProjectError(`Projeto '${sourceName}' não encontrado para clonagem.`);
+     }
+ 
+     if (projects.has(targetName)) {
+-      throw new Error(`Já existe um projeto com o nome '${targetName}'.`);
++      throw new ProjectConflictError(`Já existe um projeto com o nome '${targetName}'.`);
+     }
+ 
+     const cleanPath = normalizePath(targetPath || `/projects/${targetName}`);
+@@ -370,14 +411,24 @@
+ 
+     let paths = Array.from(p.files.keys());
+     if (extensions && extensions.length > 0) {
+-      paths = paths.filter((path) => {
+-        const ext = path.split('.').pop()?.toLowerCase();
+-        return ext && extensions.includes(ext);
+-      });
++      // Aceita ".ts", "ts" e "TS": remove o ponto inicial e ignora maiúsculas.
++      const wanted = new Set(
++        extensions
++          .filter((e) => typeof e === 'string')
++          .map((e) => e.trim().replace(/^\.+/, '').toLowerCase())
++          .filter((e) => e.length > 0)
++      );
++      if (wanted.size > 0) {
++        paths = paths.filter((filePath) => {
++          const base = filePath.split('/').pop() ?? filePath;
++          const dot = base.lastIndexOf('.');
++          return dot > 0 && wanted.has(base.slice(dot + 1).toLowerCase());
++        });
++      }
+     }
+     if (pattern) {
+-      const regex = new RegExp(pattern.replace(/\*/g, '.*'));
+-      paths = paths.filter((path) => regex.test(path));
++      const regex = globToRegExp(pattern);
++      paths = paths.filter((filePath) => regex.test(filePath));
+     }
+     return paths;
+   },
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/templates.ts b/src/server/templates.ts
+--- a/src/server/templates.ts	2026-10-04 07:19:12.000000000 +0000
++++ b/src/server/templates.ts	2026-10-06 06:06:42.569112557 +0000
+@@ -429,3 +429,8 @@
+     namespace_declaration: 'C# namespace declaration',
+   },
+ };
++
++// TSX usa a gramática 'tsx' (JSX), mas compartilha modelos, tipos de símbolo e descrições com TypeScript.
++DEFAULT_SYMBOL_TYPES.tsx = DEFAULT_SYMBOL_TYPES.typescript;
++TEMPLATES.tsx = TEMPLATES.typescript;
++COMMON_NODE_DESCRIPTIONS.tsx = COMMON_NODE_DESCRIPTIONS.typescript;
+diff -ruN -x node_modules -x dist -x engine-dist orig/src/server/workspaceRoots.ts b/src/server/workspaceRoots.ts
+--- a/src/server/workspaceRoots.ts	2026-10-04 07:36:05.000000000 +0000
++++ b/src/server/workspaceRoots.ts	2026-10-06 05:42:15.082952567 +0000
+@@ -175,3 +175,66 @@
+ 
+   return { ok: true, resolvedPath };
+ }
++
++/** Result of validating a path that the server may WRITE to (may not exist yet). */
++export type WritablePathValidation =
++  | { ok: true; resolvedPath: string }
++  | { ok: false; status: 400 | 403; error: string };
++
++/** Walks up from `p` to the nearest existing ancestor and returns its canonical path. */
++function realpathOfNearestAncestor(p: string): string | null {
++  let current = p;
++  for (;;) {
++    const real = realpathOrNull(current);
++    if (real !== null) return real;
++    const parent = path.dirname(current);
++    if (parent === current) return null;
++    current = parent;
++  }
++}
++
++/**
++ * Validates a project path that will be used for disk WRITES
++ * (git-sync, git-init, stage/commit/branch). Unlike scan-directory the
++ * target may not exist yet, so the symlink boundary is checked against
++ * the nearest existing ancestor. Same fail-closed rules and generic
++ * client messages as validateScanDirectoryPath (audit finding A1).
++ */
++export function validateWritableProjectPath(
++  projectPath: unknown,
++  config: WorkspaceRootsConfig
++): WritablePathValidation {
++  if (typeof projectPath !== 'string' || projectPath === '') {
++    return { ok: false, status: 400, error: 'Project path is required' };
++  }
++  if (projectPath.includes('\0')) {
++    return { ok: false, status: 400, error: 'Project path contains forbidden null bytes' };
++  }
++
++  const resolvedPath = path.resolve(projectPath);
++  if (!isPathWithinRoots(resolvedPath, config.roots)) {
++    logRejection('write_outside_workspace_roots', projectPath, resolvedPath, config.roots);
++    return { ok: false, status: 403, error: 'Project path is outside the allowed workspace roots' };
++  }
++
++  const realAncestor = realpathOfNearestAncestor(resolvedPath);
++  const realRoots = config.roots.map((root) => realpathOrNull(root) ?? root);
++  if (realAncestor === null || !isPathWithinRoots(realAncestor, realRoots)) {
++    logRejection('write_symlink_escape', projectPath, realAncestor ?? resolvedPath, config.roots);
++    return { ok: false, status: 403, error: 'Project path is outside the allowed workspace roots' };
++  }
++
++  return { ok: true, resolvedPath };
++}
++
++let activeConfig: WorkspaceRootsConfig | null = null;
++
++/** Registra as roots em uso (chamado por createApp) para consumidores fora do Express, como as ferramentas MCP. */
++export function setActiveWorkspaceRoots(config: WorkspaceRootsConfig): void {
++  activeConfig = config;
++}
++
++/** Roots ativas; sem app montado (ex.: testes), cai no parse do ambiente. */
++export function getActiveWorkspaceRoots(): WorkspaceRootsConfig {
++  return activeConfig ?? parseWorkspaceRootsConfig(process.env);
++}
+--- a/package.json	2026-10-06 05:02:28.000000000 +0000
++++ b/package.json	2026-10-06 05:42:43.189349350 +0000
+@@ -22,6 +22,7 @@
+     "d3": "^7.9.0",
+     "express": "^4.21.2",
+     "lucide-react": "^0.469.0",
++    "monaco-editor": "0.57.0",
+     "react": "^18.3.1",
+     "react-dom": "^18.3.1",
+     "recharts": "^2.15.0",
+--- a/package-lock.json	2026-10-06 05:02:28.000000000 +0000
++++ b/package-lock.json	2026-10-06 05:42:43.190399162 +0000
+@@ -13,6 +13,7 @@
+         "d3": "^7.9.0",
+         "express": "^4.21.2",
+         "lucide-react": "^0.469.0",
++        "monaco-editor": "0.57.0",
+         "react": "^18.3.1",
+         "react-dom": "^18.3.1",
+         "recharts": "^2.15.0",
+@@ -4218,7 +4219,6 @@
+       "resolved": "https://registry.npmjs.org/monaco-editor/-/monaco-editor-0.57.0.tgz",
+       "integrity": "sha512-5BkI9KGoqrNvBGUe15/QlZq3OooZ8WLg1AxTpaqHRCP3HNpzPPZKE2EDz8M7c+VRmCeUw1Brp4cx/PWm3kI/5A==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "dompurify": "3.4.15",
+         "marked": "14.0.0"
+--- a/index.html	2026-10-04 07:26:47.000000000 +0000
++++ b/index.html	2026-10-06 05:42:43.189180178 +0000
+@@ -8,9 +8,6 @@
+     <meta name="description" content="Model Context Protocol server and interactive playground for Tree-sitter code analysis, AST inspection, queries, and symbol extraction." />
+     <meta property="og:title" content="MCP Tree-sitter Server" />
+     <meta property="og:description" content="Model Context Protocol server and interactive playground for Tree-sitter code analysis, AST inspection, queries, and symbol extraction." />
+-    <link rel="preconnect" href="https://fonts.googleapis.com">
+-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+   <link rel="stylesheet" href="/index.css">
+ </head>
+   <body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-cyan-500/30 selection:text-cyan-200">

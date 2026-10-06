@@ -1,0 +1,12 @@
+--- a/src/server/operations.ts	2026-10-05 03:00:33.000000000 +0000
++++ b/src/server/operations.ts	2026-10-06 04:22:00.297252001 +0000
+@@ -851,7 +851,8 @@
+ 
+     const queryStr = getIdentifierQueryForLanguage(parsed.tsLanguage);
+     try {
+-      const matches = executeNativeQuery(parsed.tree, parsed.tsLanguage, queryStr);
++      // Sem limite: o padrão (100 matches) truncava silenciosamente as referências em arquivos grandes.
++      const matches = executeNativeQuery(parsed.tree, parsed.tsLanguage, queryStr, { maxResults: Number.MAX_SAFE_INTEGER });
+       for (const m of matches) {
+         for (const cap of m.captures || []) {
+           if (cap.text === symbolName) {
